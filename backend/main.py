@@ -1,73 +1,123 @@
-from fastapi import FastAPI
+import logging
+from pathlib import Path
+
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from backend.database import get_database_connection
+from backend.ai import process_chat
 
 
-app = FastAPI(title="Bundle Data Assistant")
+# --------------------------------------------------
+# APPLICATION
+# --------------------------------------------------
+
+app = FastAPI(
+    title="Bundle Data Assistant"
+)
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+FRONTEND_BUILD = BASE_DIR / "frontend" / "build"
+
+logger = logging.getLogger(__name__)
 
 
-# Allow our SvelteKit frontend to communicate with FastAPI
+# --------------------------------------------------
+# CORS
+# --------------------------------------------------
+
 app.add_middleware(
     CORSMiddleware,
+
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
     ],
+
     allow_methods=["POST"],
+
     allow_headers=["Content-Type"],
 )
 
 
-# Structure of incoming chat messages
+# --------------------------------------------------
+# REQUEST MODEL
+# --------------------------------------------------
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
 
 
-# Database reporting function
-def get_total_orders():
+# --------------------------------------------------
+# CHAT ENDPOINT
+# --------------------------------------------------
 
-    with get_database_connection() as connection:
-
-        with connection.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT COUNT(*) FROM orders;"
-            )
-
-            result = cursor.fetchone()
-
-            return result[0]
-
-
-# Chat endpoint
 @app.post("/api/chat")
 def chat(request: ChatRequest):
 
-    question = request.message.lower()
+    try:
 
-    if "order" in question:
+        result = process_chat(request.message)
 
-        try:
+        return result
 
-            total = get_total_orders()
+    except (ValueError, KeyError, TypeError) as error:
 
-            return {
-                "answer": f"There are {total} orders in the database.",
-                "rows": []
-            }
+        logger.exception(
+            "Invalid reporting request"
+        )
 
-        except Exception as error:
-            print("DATABASE ERROR:", type(error).__name__, str(error))
-            return {
-                "answer": "Sorry, I could not retrieve the order data.",
-                "rows": []
-                }
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid reporting parameters. Check the requested dates and grouping."
+        ) from error
 
-    return {
-        "answer": "I can help you with questions about orders.",
-        "rows": []
-    }
+    except Exception as error:
+
+        logger.exception(
+            "Chat processing failed"
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to process the request. Please try again."
+        ) from error
+
+# --------------------------------------------------
+# SERVE PRODUCTION FRONTEND
+# --------------------------------------------------
+
+if FRONTEND_BUILD.exists():
+
+    app.mount(
+        "/_app",
+        StaticFiles(
+            directory=FRONTEND_BUILD / "_app"
+        ),
+        name="frontend-assets"
+    )
+
+    @app.get("/")
+    def serve_frontend():
+
+        return FileResponse(
+            FRONTEND_BUILD / "index.html"
+        )
+
+    @app.get("/favicon.svg")
+    def serve_favicon():
+
+        return FileResponse(
+            FRONTEND_BUILD / "favicon.svg"
+        )
+
+    @app.get("/robots.txt")
+    def serve_robots():
+
+        return FileResponse(
+            FRONTEND_BUILD / "robots.txt"
+        )
