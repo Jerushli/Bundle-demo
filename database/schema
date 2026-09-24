@@ -1,0 +1,30 @@
+CREATE TABLE IF NOT EXISTS providers (
+    provider_id INTEGER PRIMARY KEY,
+    provider_name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    order_id INTEGER PRIMARY KEY,
+    provider_id INTEGER NOT NULL REFERENCES providers(provider_id),
+    order_date DATE NOT NULL
+);
+
+INSERT INTO providers (provider_id, provider_name)
+VALUES
+    (1, 'Alpha'),
+    (2, 'Beta')
+ON CONFLICT (provider_id) DO UPDATE
+SET provider_name = EXCLUDED.provider_name;
+
+INSERT INTO orders (order_id, provider_id, order_date)
+VALUES
+    (1, 1, DATE '2026-09-01'),
+    (2, 1, DATE '2026-09-02'),
+    (3, 1, DATE '2026-09-03'),
+    (4, 2, DATE '2026-09-01'),
+    (5, 2, DATE '2026-09-03')
+ON CONFLICT (order_id) DO UPDATE
+SET
+    provider_id = EXCLUDED.provider_id,
+    order_date = EXCLUDED.order_date;
+    
