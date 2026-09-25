@@ -1,10 +1,11 @@
 import logging
+
 from pathlib import Path
 
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.ai import process_chat
@@ -17,11 +18,17 @@ from backend.ai import process_chat
 app = FastAPI(
     title="Bundle Data Assistant"
 )
+
+logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------
+# PATH CONFIGURATION
+# --------------------------------------------------
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 FRONTEND_BUILD = BASE_DIR / "frontend" / "build"
-
-logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
@@ -45,15 +52,18 @@ app.add_middleware(
 
 
 # --------------------------------------------------
-# REQUEST MODEL
+# CHAT REQUEST MODEL
 # --------------------------------------------------
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1)
+
+    message: str = Field(
+        min_length=1
+    )
 
 
 # --------------------------------------------------
-# CHAT ENDPOINT
+# CHAT API
 # --------------------------------------------------
 
 @app.post("/api/chat")
@@ -61,7 +71,9 @@ def chat(request: ChatRequest):
 
     try:
 
-        result = process_chat(request.message)
+        result = process_chat(
+            request.message
+        )
 
         return result
 
@@ -87,17 +99,20 @@ def chat(request: ChatRequest):
             detail="Unable to process the request. Please try again."
         ) from error
 
+
 # --------------------------------------------------
-# SERVE PRODUCTION FRONTEND
+# SERVE FRONTEND
 # --------------------------------------------------
 
 if FRONTEND_BUILD.exists():
 
     app.mount(
         "/_app",
+
         StaticFiles(
             directory=FRONTEND_BUILD / "_app"
         ),
+
         name="frontend-assets"
     )
 

@@ -1,0 +1,31 @@
+# Git
+.git
+
+# Private credentials
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Python
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+
+# Node.js
+**/node_modules
+
+# Generated frontend files
+frontend/.svelte-kit
+frontend/build
+frontend/dist
+
+# IDE
+.vscode
+.idea
+
+# Temporary files
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,18 @@
+# Environment variables and secrets
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Python virtual environments
+.venv/
+venv/
+
+# Node dependencies and build outputs
+node_modules/
+frontend/.svelte-kit/
+frontend/build/
