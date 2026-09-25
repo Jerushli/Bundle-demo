@@ -629,7 +629,11 @@ The application uses the following security principles:
 Additional authentication, read-only database permissions, query timeouts, and production security checks are planned before public deployment.
 
 ---
+# why using render
 
+By searching across the multiple free hosting service , render supports existing python friendly backend and hosting the website for 15 minutes without any error.After every 15 minutes the connection get established freshly.
+
+---
 # 10. Pending Tasks
 
 The following tasks remain:
