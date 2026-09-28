@@ -55,11 +55,24 @@ app.add_middleware(
 # CHAT REQUEST MODEL
 # --------------------------------------------------
 
-class ChatRequest(BaseModel):
+from typing import Literal
+from pydantic import BaseModel, Field
 
-    message: str = Field(
-        min_length=1
+
+class ChatHistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+class AnalysisContext(BaseModel):
+    metric: str | None = None
+    group_by: str | None = None
+    entity: str | None = None
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatHistoryItem] = Field(
+        default_factory=list
     )
+    context: AnalysisContext | None = None
 
 
 # --------------------------------------------------
@@ -72,8 +85,19 @@ def chat(request: ChatRequest):
     try:
 
         result = process_chat(
-            request.message
-        )
+            request.message,
+
+            history=[
+                item.model_dump()
+                for item in request.history
+          ],
+
+          context=(
+              request.context.model_dump()
+              if request.context
+              else None
+            ),
+       )
 
         return result
 
@@ -88,16 +112,13 @@ def chat(request: ChatRequest):
             detail="Invalid reporting parameters. Check the requested dates and grouping."
         ) from error
 
-    except Exception as error:
-
-        logger.exception(
-            "Chat processing failed"
-        )
+    except Exception as exc:
+        logger.exception("Chat request failed")
 
         raise HTTPException(
             status_code=502,
-            detail="Unable to process the request. Please try again."
-        ) from error
+            detail=f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 # --------------------------------------------------

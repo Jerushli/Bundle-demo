@@ -1,64 +1,75 @@
 import os
 import json
-import sys
-import re
 
-from datetime import date, datetime
 from pathlib import Path
+from decimal import Decimal
 
 from dotenv import load_dotenv
 from groq import Groq
 
-from backend.reporting import get_order_summary
+from backend.reporting import (
+    get_financial_summary,
+    get_financial_comparison,
+    get_percentage_of_total,
+    get_financial_statistics,
+)
 
 
-# --------------------------------------------------
+# ============================================================
 # ENVIRONMENT CONFIGURATION
-# --------------------------------------------------
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
 
-load_dotenv(BASE_DIR / ".env")
+# Root .env
+load_dotenv(
+    PROJECT_ROOT / ".env",
+    override=True,
+)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is missing")
+
+GROQ_API_KEY = GROQ_API_KEY.strip()
+
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
-    "openai/gpt-oss-20b"
+    "openai/gpt-oss-20b",
 )
 
-
-# --------------------------------------------------
-# CREATE GROQ CLIENT
-# --------------------------------------------------
 
 if not GROQ_API_KEY:
     raise RuntimeError(
-        "GROQ_API_KEY is missing from backend/.env"
+        "GROQ_API_KEY is missing from the .env file"
     )
+
 
 client = Groq(
     api_key=GROQ_API_KEY,
-    timeout=30.0
+    timeout=30.0,
 )
 
 
-# --------------------------------------------------
-# DEFINE TOOL FOR AI
-# --------------------------------------------------
+# ============================================================
+# TOOL 1 — FINANCIAL SUMMARY
+# ============================================================
 
-REPORTING_TOOL = {
+FINANCIAL_SUMMARY_TOOL = {
     "type": "function",
 
     "function": {
 
-        "name": "get_order_summary",
+        "name": "get_financial_summary",
 
         "description": (
-            "Retrieve real order counts from the PostgreSQL "
-            "database. Use this tool whenever the user asks "
-            "about order totals, orders by provider, "
-            "or orders by date."
+            "Retrieve aggregated financial information from "
+            "PostgreSQL. Use this for totals, rankings, grouped "
+            "results, top countries, top products, sales by "
+            "segment, monthly results, yearly results, and similar "
+            "single-dimension financial analysis."
         ),
 
         "parameters": {
@@ -67,366 +78,1574 @@ REPORTING_TOOL = {
 
             "properties": {
 
-                "from_date": {
+                "metric": {
                     "type": "string",
+                    "enum": [
+                        "sales",
+                        "profit",
+                        "cogs",
+                        "gross_sales",
+                        "discounts",
+                        "units_sold",
+                    ],
                     "description": (
-                        "Start date in YYYY-MM-DD format."
-                    )
-                },
-
-                "to_date": {
-                    "type": "string",
-                    "description": (
-                        "End date in YYYY-MM-DD format."
-                    )
+                        "The financial metric to calculate."
+                    ),
                 },
 
                 "group_by": {
                     "type": "string",
                     "enum": [
                         "total",
-                        "provider",
-                        "date"
+                        "country",
+                        "product",
+                        "segment",
+                        "year",
+                        "month",
+                        "discount_band",
                     ],
                     "description": (
-                        "How the order results should be grouped."
-                    )
+                        "How the result should be grouped."
+                    ),
                 },
 
-                "provider": {
+                "year": {
+                    "type": "integer",
+                    "description": (
+                        "Optional year filter such as 2014."
+                    ),
+                },
+
+                "country": {
                     "type": "string",
                     "description": (
-                        "Optional provider name, such as Alpha or Beta."
-                    )
-                }
+                        "Optional country filter."
+                    ),
+                },
 
+                "product": {
+                    "type": "string",
+                    "description": (
+                        "Optional product filter."
+                    ),
+                },
+
+                "segment": {
+                    "type": "string",
+                    "description": (
+                        "Optional segment filter."
+                    ),
+                },
+
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum grouped rows to return. "
+                        "Use small limits for top-N questions."
+                    ),
+                    "default": 20,
+                },
             },
 
             "required": [
-                "from_date",
-                "to_date",
-                "group_by"
-            ]
-        }
-    }
+                "metric",
+                "group_by",
+            ],
+        },
+    },
 }
 
 
-# --------------------------------------------------
-# SYSTEM INSTRUCTIONS
-# --------------------------------------------------
+# ============================================================
+# TOOL 2 — FINANCIAL COMPARISON
+# ============================================================
+
+FINANCIAL_COMPARISON_TOOL = {
+    "type": "function",
+
+    "function": {
+
+        "name": "get_financial_comparison",
+
+        "description": (
+            "Compare the same financial metric across explicitly "
+            "named countries, products, segments, or discount bands. "
+            "Use this when the user says compare, versus, vs, "
+            "difference between, or asks about multiple named groups."
+        ),
+
+        "parameters": {
+
+            "type": "object",
+
+            "properties": {
+
+                "metric": {
+                    "type": "string",
+                    "enum": [
+                        "sales",
+                        "profit",
+                        "cogs",
+                        "gross_sales",
+                        "discounts",
+                        "units_sold",
+                    ],
+                },
+
+                "group_by": {
+                    "type": "string",
+                    "enum": [
+                        "country",
+                        "product",
+                        "segment",
+                        "discount_band",
+                    ],
+                },
+
+                "values": {
+                    "type": "array",
+
+                    "items": {
+                        "type": "string"
+                    },
+
+                    "minItems": 1,
+
+                    "description": (
+                        "Names that should be compared. "
+                        "Example: ['Canada', 'Germany']."
+                    ),
+                },
+
+                "year": {
+                    "type": "integer",
+                    "description": (
+                        "Optional year filter."
+                    ),
+                },
+            },
+
+            "required": [
+                "metric",
+                "group_by",
+                "values",
+            ],
+        },
+    },
+}
+
+
+# ============================================================
+# TOOL 3 — PERCENTAGE OF TOTAL
+# ============================================================
+
+PERCENTAGE_TOOL = {
+    "type": "function",
+
+    "function": {
+
+        "name": "get_percentage_of_total",
+
+        "description": (
+            "Calculate how much one country, product, segment, "
+            "or discount band contributes to the overall total "
+            "for a financial metric. Use this for percentage, "
+            "share, contribution, proportion, or percent-of-total "
+            "questions."
+        ),
+
+        "parameters": {
+
+            "type": "object",
+
+            "properties": {
+
+                "metric": {
+                    "type": "string",
+                    "enum": [
+                        "sales",
+                        "profit",
+                        "cogs",
+                        "gross_sales",
+                        "discounts",
+                        "units_sold",
+                    ],
+                },
+
+                "group_by": {
+                    "type": "string",
+                    "enum": [
+                        "country",
+                        "product",
+                        "segment",
+                        "discount_band",
+                    ],
+                },
+
+                "value": {
+                    "type": "string",
+                    "description": (
+                        "The specific member whose contribution "
+                        "should be calculated. Example: Government."
+                    ),
+                },
+
+                "year": {
+                    "type": "integer",
+                    "description": (
+                        "Optional year filter."
+                    ),
+                },
+            },
+
+            "required": [
+                "metric",
+                "group_by",
+                "value",
+            ],
+        },
+    },
+}
+
+FINANCIAL_STATISTICS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_financial_statistics",
+
+        "description": (
+            "Calculate sums, averages, minimums or maximums "
+            "for financial metrics, optionally grouped and "
+            "filtered by year, date range, country, product "
+            "or segment."
+        ),
+
+        "parameters": {
+            "type": "object",
+
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": [
+                        "sales",
+                        "profit",
+                        "cogs",
+                        "gross_sales",
+                        "discounts",
+                        "units_sold",
+                        "sale_price",
+                        "manufacturing_price",
+                    ],
+                },
+
+                "aggregation": {
+                    "type": "string",
+                    "enum": [
+                        "sum",
+                        "average",
+                        "minimum",
+                        "maximum",
+                    ],
+                },
+
+                "group_by": {
+                    "type": "string",
+                    "enum": [
+                        "total",
+                        "country",
+                        "product",
+                        "segment",
+                        "year",
+                        "month",
+                        "discount_band",
+                    ],
+                },
+
+                "year": {
+                    "type": "integer"
+                },
+
+                "from_date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                },
+
+                "to_date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD"
+                },
+
+                "country": {
+                    "type": "string"
+                },
+
+                "product": {
+                    "type": "string"
+                },
+
+                "segment": {
+                    "type": "string"
+                },
+
+                "order": {
+                    "type": "string",
+                    "enum": [
+                        "highest",
+                        "lowest",
+                    ],
+                },
+
+                "limit": {
+                    "type": "integer"
+                },
+            },
+
+            "required": [
+                "metric",
+                "aggregation",
+                "group_by",
+            ],
+        },
+    },
+}
+
+TOOLS = [
+    FINANCIAL_SUMMARY_TOOL,
+    FINANCIAL_COMPARISON_TOOL,
+    PERCENTAGE_TOOL,
+    FINANCIAL_STATISTICS_TOOL,
+]
+
+
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
 
 SYSTEM_PROMPT = """
 You are Bundle Data Assistant.
 
-You help users retrieve order information from
-a PostgreSQL database.
+You analyze financial data stored in PostgreSQL.
 
-Available reporting operations:
+The financial dataset contains:
 
-1. Total orders.
-2. Orders grouped by provider.
-3. Orders grouped by date.
-4. Orders filtered by provider.
+- segment
+- country
+- product
+- discount band
+- units sold
+- manufacturing price
+- sale price
+- gross sales
+- discounts
+- sales
+- COGS
+- profit
+- date
+- month
+- year
 
-Use get_order_summary whenever the user asks
-a question requiring order data.
 
-Do not invent database numbers.
+AVAILABLE TOOLS
 
-The demo database contains records for
-September 1 through September 3, 2026.
 
-If the user asks about all orders without specifying
-dates, use:
+1. get_financial_summary
 
-from_date: 2026-09-01
-to_date: 2026-09-03
+Use this for:
 
-For questions such as:
-"How many orders are there?"
+- totals
+- rankings
+- highest / lowest
+- top products
+- top countries
+- grouped results
+- sales by segment
+- profit by product
+- monthly results
+- yearly results
+- filtered results
 
-Use group_by: total.
 
-For questions such as:
-"Show orders by provider"
+Examples:
 
-Use group_by: provider.
+"Which country generated the highest sales?"
 
-For questions such as:
-"Show orders by date"
+metric = sales
+group_by = country
 
-Use group_by: date.
 
-For questions such as:
-"How many orders did Alpha receive?"
+"Which product made the most profit?"
 
-Use provider: Alpha
-and group_by: total.
+metric = profit
+group_by = product
 
-Keep answers clear and concise.
 
-IMPORTANT DATE RULES:
+"What was total profit in 2014?"
 
-Always preserve the dates explicitly provided by the user.
+metric = profit
+group_by = total
+year = 2014
 
-Never silently change, reverse, correct, or replace
-an invalid date range.
 
-Only use the default date range when the user does
-not specify any dates.
+"Which product made the most profit in 2014?"
 
-If the user provides a start date that comes after
-the end date, do not execute a reporting tool.
+metric = profit
+group_by = product
+year = 2014
 
-Explain that the start date must be before or
-equal to the end date.
 
-If the user's date range is unclear, ask for clarification.
+"Show the top 3 products by sales"
+
+metric = sales
+group_by = product
+limit = 3
+
+
+"Show sales by segment"
+
+metric = sales
+group_by = segment
+
+
+
+2. get_financial_comparison
+
+Use this when the user explicitly compares named values.
+
+Examples:
+
+"Compare sales of Canada and Germany"
+
+metric = sales
+group_by = country
+values = ["Canada", "Germany"]
+
+
+"Compare Canada and France profit in 2014"
+
+metric = profit
+group_by = country
+values = ["Canada", "France"]
+year = 2014
+
+
+"Compare Paseo and VTT sales"
+
+metric = sales
+group_by = product
+values = ["Paseo", "VTT"]
+
+
+
+3. get_percentage_of_total
+
+Use this for:
+
+- percentage of total
+- share of total
+- contribution
+- proportion
+
+
+Examples:
+
+"What percentage of total sales came from Government?"
+
+metric = sales
+group_by = segment
+value = Government
+
+
+"What percentage of 2014 profit came from Canada?"
+
+metric = profit
+group_by = country
+value = Canada
+year = 2014
+
+4. get_financial_statistics
+
+Use this tool when the question asks for:
+
+- average
+- mean
+- minimum
+- maximum
+- lowest
+- date ranges
+- average price
+- average profit
+- average units sold
+
+Examples:
+
+"What is the average sale price?"
+
+metric = sale_price
+aggregation = average
+group_by = total
+
+
+"Which product has the highest average profit?"
+
+metric = profit
+aggregation = average
+group_by = product
+order = highest
+
+
+"Which country had the lowest sales?"
+
+metric = sales
+aggregation = sum
+group_by = country
+order = lowest
+limit = 1
+
+
+"What was average profit in Canada in 2014?"
+
+metric = profit
+aggregation = average
+group_by = total
+country = Canada
+year = 2014
+
+IMPORTANT RULES
+
+Never invent database values.
+
+Always call a tool when answering a question that requires
+financial database information.
+
+Do not write or execute arbitrary SQL.
+
+Only use the approved reporting tools.
+
+Use get_financial_comparison when multiple specific groups
+are explicitly being compared.
+
+Use get_percentage_of_total for percentage/share/contribution
+questions.
+
+Use get_financial_summary for ordinary totals, rankings,
+filters, top-N and grouped analyses.
+
+For questions such as highest, largest, most, top or best-selling,
+the grouped result is ordered from highest to lowest.
+
+If the question is unrelated to this financial dataset,
+briefly explain what financial information you can analyze.
+
+Keep answers concise and data-driven.
+
+CONVERSATION CONTEXT RULES
+
+The user may ask short follow-up questions.
+Always use the recent conversation history to resolve them.
+
+Preserve the analytical structure of the previous question unless
+the user explicitly changes it.
+
+Example 1:
+
+User:
+"Which country generated the highest sales?"
+
+Assistant:
+"Canada generated the highest sales."
+
+User:
+"What about profit?"
+
+Interpret this as:
+
+"Which country generated the highest profit?"
+
+Use:
+metric = profit
+group_by = country
+order = highest
+
+
+Example 2:
+
+User:
+"Which product generated the highest sales?"
+
+User:
+"What about profit?"
+
+Interpret this as:
+
+"Which product generated the highest profit?"
+
+Keep:
+group_by = product
+
+Change only:
+metric = profit
+
+
+Example 3:
+
+User:
+"Which country generated the highest sales?"
+
+Assistant:
+"Canada generated the highest sales."
+
+User:
+"Compare it with Germany."
+
+Interpret "it" as Canada.
+
+Use:
+get_financial_comparison
+
+metric = sales
+group_by = country
+values = ["Canada", "Germany"]
+
+
+Example 4:
+
+User:
+"Which country generated the highest sales?"
+
+Assistant:
+"Canada generated the highest sales."
+
+User:
+"What about profit?"
+
+Assistant:
+"Canada generated ... profit."
+
+User:
+"Compare it with Germany."
+
+Interpret this as comparing Canada and Germany using profit.
+
+Use:
+metric = profit
+group_by = country
+values = ["Canada", "Germany"]
+
+
+FOLLOW-UP RULES
+
+If the user says:
+- "what about profit?"
+- "what about sales?"
+- "what about units sold?"
+
+change only the metric and preserve the previous grouping and filters.
+
+If the user says:
+- "compare it with X"
+- "what about X?"
+- "and X?"
+
+resolve "it" using the most recent clearly identified
+country, product, or segment.
+
+Do not change a grouped analysis into a total analysis unless
+the user explicitly asks for a total.
+
+Do not ask for clarification when the recent history clearly
+identifies the subject.
+
+Only ask for clarification when there is genuinely no clear
+referent in the recent conversation.
+
 """
 
-def validate_question_date_range(question: str):
 
-    pattern = (
-        r"\b"
-        r"(?P<month>"
-        r"January|February|March|April|May|June|"
-        r"July|August|September|October|November|December"
-        r")"
-        r"\s+"
-        r"(?P<start_day>\d{1,2})"
-        r"\s+to\s+"
-        r"(?P<end_day>\d{1,2})"
-        r",?\s+"
-        r"(?P<year>\d{4})"
-        r"\b"
+# ============================================================
+# NUMBER FORMATTING
+# ============================================================
+
+def number_to_float(value):
+
+    if isinstance(value, Decimal):
+        return float(value)
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    return 0.0
+
+
+def format_number(value):
+
+    if value is None:
+        return "0"
+
+    if isinstance(value, Decimal):
+        value = float(value)
+
+    if isinstance(value, int):
+        return f"{value:,}"
+
+    if isinstance(value, float):
+
+        if value.is_integer():
+            return f"{int(value):,}"
+
+        return f"{value:,.2f}"
+
+    return str(value)
+
+
+# ============================================================
+# SUMMARY ANSWER FORMATTER
+# ============================================================
+
+def format_summary_answer(result):
+
+    rows = result["rows"]
+
+    metric = result["metric"]
+
+    group_by = result["group_by"]
+
+    filters = result["filters"]
+
+    readable_metric = metric.replace(
+        "_",
+        " ",
     )
 
-    match = re.search(
-        pattern,
-        question,
-        re.IGNORECASE
-    )
-
-    if not match:
-        return
-
-    month = datetime.strptime(
-        match.group("month"),
-        "%B"
-    ).month
-
-    year = int(match.group("year"))
-
-    start = date(
-        year,
-        month,
-        int(match.group("start_day"))
-    )
-
-    end = date(
-        year,
-        month,
-        int(match.group("end_day"))
-    )
-
-    if start > end:
-
-        raise ValueError(
-            "The start date cannot be after the end date."
+    if not rows:
+        return (
+            "No matching financial records were found."
         )
 
-# --------------------------------------------------
-# AI CHAT FUNCTION
-# --------------------------------------------------
+    # --------------------------------------------------------
+    # TOTAL
+    # --------------------------------------------------------
 
-def process_chat(question: str):
-        
-    validate_question_date_range(question)
+    if group_by == "total":
 
-    messages = [
+        value = rows[0]["value"]
 
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT
-        },
+        filter_parts = []
 
-        {
-            "role": "user",
-            "content": question
-        }
+        if filters.get("year"):
+            filter_parts.append(
+                f"in {filters['year']}"
+            )
 
+        if filters.get("country"):
+            filter_parts.append(
+                f"for {filters['country']}"
+            )
+
+        if filters.get("product"):
+            filter_parts.append(
+                f"for product {filters['product']}"
+            )
+
+        if filters.get("segment"):
+            filter_parts.append(
+                f"for segment {filters['segment']}"
+            )
+
+        filter_text = ""
+
+        if filter_parts:
+            filter_text = (
+                " " + " ".join(filter_parts)
+            )
+
+        return (
+            f"Total {readable_metric}{filter_text} "
+            f"is {format_number(value)}."
+        )
+
+    # --------------------------------------------------------
+    # GROUPED
+    # --------------------------------------------------------
+
+    first = rows[0]
+
+    group_name = first.get(
+        "group_name"
+    )
+
+    value = first.get(
+        "value"
+    )
+
+    if group_by == "month":
+
+        return (
+            f"Monthly {readable_metric} results "
+            f"returned {len(rows)} month(s)."
+        )
+
+    return (
+        f"The highest {readable_metric} by "
+        f"{group_by.replace('_', ' ')} is "
+        f"{group_name} with "
+        f"{format_number(value)}. "
+        f"{len(rows)} result(s) were returned."
+    )
+
+
+# ============================================================
+# COMPARISON ANSWER FORMATTER
+# ============================================================
+
+def format_comparison_answer(result):
+
+    rows = result["rows"]
+
+    metric = result["metric"]
+
+    year = result.get("year")
+
+    readable_metric = metric.replace(
+        "_",
+        " ",
+    )
+
+    if not rows:
+
+        return (
+            "No matching records were found "
+            "for the requested comparison."
+        )
+
+    if len(rows) == 1:
+
+        row = rows[0]
+
+        return (
+            f"{row['group_name']} has "
+            f"{format_number(row['value'])} "
+            f"{readable_metric}"
+            + (
+                f" in {year}."
+                if year
+                else "."
+            )
+        )
+
+    first = rows[0]
+    second = rows[1]
+
+    first_value = number_to_float(
+        first["value"]
+    )
+
+    second_value = number_to_float(
+        second["value"]
+    )
+
+    difference = abs(
+        first_value - second_value
+    )
+
+    year_text = (
+        f" in {year}"
+        if year
+        else ""
+    )
+
+    return (
+        f"{first['group_name']} has "
+        f"{format_number(first['value'])} "
+        f"{readable_metric}{year_text}, while "
+        f"{second['group_name']} has "
+        f"{format_number(second['value'])}. "
+        f"The difference is "
+        f"{format_number(difference)}."
+    )
+
+
+# ============================================================
+# PERCENTAGE ANSWER FORMATTER
+# ============================================================
+
+def format_percentage_answer(result):
+
+    percentage = number_to_float(
+        result["percentage"]
+    )
+
+    metric = result["metric"]
+
+    group_by = result["group_by"]
+
+    value = result["value"]
+
+    selected_value = result[
+        "selected_value"
     ]
 
-    # Ask Groq to understand the user's question.
+    total_value = result[
+        "total_value"
+    ]
 
-    response = client.chat.completions.create(
+    year = result.get("year")
 
-        model=GROQ_MODEL,
-
-        messages=messages,
-
-        tools=[REPORTING_TOOL],
-
-        tool_choice="auto",
-
-        temperature=0
-
+    readable_metric = metric.replace(
+        "_",
+        " ",
     )
 
-    assistant_message = response.choices[0].message
+    year_text = (
+        f" in {year}"
+        if year
+        else ""
+    )
 
-    # Check whether the AI selected a tool.
+    return (
+        f"{value} contributed "
+        f"{percentage:.2f}% of total "
+        f"{readable_metric}{year_text}. "
+        f"Its {readable_metric} was "
+        f"{format_number(selected_value)} "
+        f"out of {format_number(total_value)}."
+    )
 
-    if assistant_message.tool_calls:
 
-        tool_call = assistant_message.tool_calls[0]
+# ============================================================
+# MAIN CHAT FUNCTION
+# ============================================================
 
-        function_name = tool_call.function.name
+def process_chat(
+    question: str,
+    history: list[dict] | None = None,
+    context: dict | None = None,
+):
 
-        # Only execute our approved reporting function.
+    normalized_question = question.strip().lower()
 
-        if function_name != "get_order_summary":
+    # ========================================================
+    # DETERMINISTIC FOLLOW-UP HANDLING
+    # ========================================================
+
+    if context:
+        previous_metric = context.get("metric")
+        previous_group = context.get("group_by")
+        previous_entity = context.get("entity")
+
+        metric_followups = {
+            "what about profit?": "profit",
+            "what about profit": "profit",
+            "what about sales?": "sales",
+            "what about sales": "sales",
+            "what about units sold?": "units_sold",
+            "what about units sold": "units_sold",
+            "what about cogs?": "cogs",
+            "what about cogs": "cogs",
+            "what about discounts?": "discounts",
+            "what about discounts": "discounts",
+        }
+
+        if (
+            normalized_question in metric_followups
+            and previous_group
+        ):
+            new_metric = metric_followups[
+                normalized_question
+            ]
+
+            result = get_financial_summary(
+                metric=new_metric,
+                group_by=previous_group,
+                limit=1,
+            )
 
             return {
-                "answer": "Unsupported reporting operation.",
-                "rows": []
+                "answer": format_summary_answer(result),
+                "rows": result["rows"],
+                "group_by": result["group_by"],
+                "metric": result["metric"],
+                "source": "financials",
             }
 
-        # Convert the AI's JSON arguments to Python values.
+        compare_prefix = "compare it with "
 
-        arguments = json.loads(
-            tool_call.function.arguments
+        if (
+            normalized_question.startswith(compare_prefix)
+            and previous_entity
+            and previous_metric
+            and previous_group
+        ):
+            other_entity = (
+                question.strip()[len(compare_prefix):]
+                .rstrip(".?!")
+                .strip()
+            )
+
+            if other_entity:
+                result = get_financial_comparison(
+                    metric=previous_metric,
+                    group_by=previous_group,
+                    values=[
+                        previous_entity,
+                        other_entity,
+                    ],
+                )
+
+                return {
+                    "answer": format_comparison_answer(
+                        result
+                    ),
+                    "rows": result["rows"],
+                    "group_by": result["group_by"],
+                    "metric": result["metric"],
+                    "source": "financials",
+                }
+
+    # ========================================================
+    # BUILD CONTEXT BEFORE GROQ CALL
+    # ========================================================
+
+    context_text = ""
+
+    if context:
+        context_text = f"""
+
+MOST RECENT ANALYSIS CONTEXT
+
+metric: {context.get("metric")}
+group_by: {context.get("group_by")}
+entity: {context.get("entity")}
+
+Use this context for follow-up questions.
+
+If the user changes only the metric, preserve the
+previous grouping.
+
+If the user says "compare it with X", interpret "it"
+as the most recent entity.
+
+Do not discard the previous analytical context unless
+the user explicitly changes it.
+"""
+
+    messages = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT + context_text,
+        }
+    ]
+
+    if history:
+        for item in history[-8:]:
+            role = item.get("role")
+            content = item.get("content")
+
+            if (
+                role in {"user", "assistant"}
+                and content
+            ):
+                messages.append({
+                    "role": role,
+                    "content": content,
+                })
+
+    messages.append({
+        "role": "user",
+        "content": question,
+    })
+
+    # ========================================================
+    # ASK GROQ
+    # ========================================================
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=messages,
+        tools=TOOLS,
+        tool_choice="auto",
+        temperature=0,
+    )
+
+    assistant_message = (
+        response.choices[0].message
+    )
+
+    # ========================================================
+    # NO TOOL CALL
+    # ========================================================
+
+    if not assistant_message.tool_calls:
+        return {
+            "answer": (
+                assistant_message.content
+                or (
+                    "I can help analyze sales, profit, "
+                    "products, countries, segments and "
+                    "other financial data."
+                )
+            ),
+            "rows": [],
+        }
+
+    # ========================================================
+    # EXECUTE TOOL
+    # ========================================================
+
+    tool_call = assistant_message.tool_calls[0]
+
+    function_name = (
+        tool_call.function.name
+    )
+
+    arguments = json.loads(
+        tool_call.function.arguments
+    )
+
+    # --------------------------------------------------------
+    # FINANCIAL SUMMARY
+    # --------------------------------------------------------
+
+    if function_name == "get_financial_summary":
+
+        result = get_financial_summary(
+            metric=arguments.get(
+                "metric",
+                "sales",
+            ),
+            group_by=arguments.get(
+                "group_by",
+                "total",
+            ),
+            year=arguments.get("year"),
+            country=arguments.get("country"),
+            product=arguments.get("product"),
+            segment=arguments.get("segment"),
+            limit=arguments.get(
+                "limit",
+                20,
+            ),
         )
 
+        return {
+            "answer": format_summary_answer(
+                result
+            ),
+            "rows": result["rows"],
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
+        }
 
-        # Execute the reporting function.
+    # --------------------------------------------------------
+    # COMPARISON
+    # --------------------------------------------------------
 
-        result = get_order_summary(
-            from_date=arguments["from_date"],
-            to_date=arguments["to_date"],
+    if function_name == "get_financial_comparison":
+
+        result = get_financial_comparison(
+            metric=arguments["metric"],
             group_by=arguments["group_by"],
-            provider=arguments.get("provider")
+            values=arguments["values"],
+            year=arguments.get("year"),
         )
 
-        # Prepare a deterministic answer using actual DB results.
+        return {
+            "answer": format_comparison_answer(
+                result
+            ),
+            "rows": result["rows"],
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
+        }
+
+    # --------------------------------------------------------
+    # PERCENTAGE OF TOTAL
+    # --------------------------------------------------------
+
+    if function_name == "get_percentage_of_total":
+
+        result = get_percentage_of_total(
+            metric=arguments["metric"],
+            group_by=arguments["group_by"],
+            value=arguments["value"],
+            year=arguments.get("year"),
+        )
+
+        rows = [
+            {
+                "group_name": result["value"],
+                "selected_value": result[
+                    "selected_value"
+                ],
+                "total_value": result[
+                    "total_value"
+                ],
+                "percentage": round(
+                    number_to_float(
+                        result["percentage"]
+                    ),
+                    2,
+                ),
+            }
+        ]
+
+        return {
+            "answer": format_percentage_answer(
+                result
+            ),
+            "rows": rows,
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
+        }
+
+    # --------------------------------------------------------
+    # FINANCIAL STATISTICS
+    # --------------------------------------------------------
+
+    if function_name == "get_financial_statistics":
+
+        result = get_financial_statistics(
+            metric=arguments["metric"],
+            aggregation=arguments[
+                "aggregation"
+            ],
+            group_by=arguments["group_by"],
+            year=arguments.get("year"),
+            from_date=arguments.get(
+                "from_date"
+            ),
+            to_date=arguments.get(
+                "to_date"
+            ),
+            country=arguments.get(
+                "country"
+            ),
+            product=arguments.get(
+                "product"
+            ),
+            segment=arguments.get(
+                "segment"
+            ),
+            order=arguments.get(
+                "order",
+                "highest",
+            ),
+            limit=arguments.get(
+                "limit",
+                20,
+            ),
+        )
 
         rows = result["rows"]
 
-        group_by = result["group_by"]
+        readable_metric = (
+            result["metric"]
+            .replace("_", " ")
+        )
 
-        if group_by == "total":
+        readable_aggregation = (
+            result["aggregation"]
+        )
 
-            if not rows:
+        if not rows:
+            answer = (
+                "No matching financial records were found."
+            )
 
-                answer = (
-                    "No orders found between "
-                    f"{result['from_date']} "
-                    f"and {result['to_date']}."
-                )
-
-            else:
-                total = rows[0]["total_orders"]
-
-                if total == 0:
-
-                    answer = (
-                        "No orders found between "
-                        f"{result['from_date']} "
-                        f"and {result['to_date']}."
-                    )
-
-                else:
-
-                    answer = (
-                        f"There are {total} orders "
-                        f"between {result['from_date']} "
-                        f"and {result['to_date']}."
-                    )
-
-        elif group_by == "provider":
-
-            if not rows:
-
-                answer = (
-                    "No orders found for the selected period."
-                )
-
-            else:
-
-                total = sum(
-                    row["total_orders"]
-                    for row in rows
-                )
-
-                answer = (
-                    f"Found {total} orders "
-                    f"across {len(rows)} provider(s)."
-                )
+        elif result["group_by"] == "total":
+            answer = (
+                f"The {readable_aggregation} "
+                f"{readable_metric} is "
+                f"{format_number(rows[0]['value'])}."
+            )
 
         else:
+            first = rows[0]
 
-            if not rows:
-
-                answer = (
-                    "No orders found for the selected period."
-                )
-
-            else:
-
-                total = sum(
-                    row["total_orders"]
-                    for row in rows
-                )
-
-                answer = (
-                    f"Found {total} orders "
-                    f"across {len(rows)} date(s)."
-                )
+            answer = (
+                f"The {result['order']} "
+                f"{readable_aggregation} "
+                f"{readable_metric} by "
+                f"{result['group_by']} is "
+                f"{first['group_name']} with "
+                f"{format_number(first['value'])}."
+            )
 
         return {
             "answer": answer,
             "rows": rows,
-            "group_by": group_by
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
         }
 
-    # No reporting tool was selected.
+    # --------------------------------------------------------
+    # UNKNOWN TOOL
+    # --------------------------------------------------------
 
     return {
         "answer": (
-            assistant_message.content
-            or "I can help with order reporting questions."
+            "Unsupported financial reporting operation."
         ),
-        "rows": []
+        "rows": [],
     }
 
+    # ========================================================
+    # NO TOOL CALL
+    # ========================================================
 
-# --------------------------------------------------
-# PRINT UTILITY
-# --------------------------------------------------
+    if not assistant_message.tool_calls:
 
-class print:
-    """A small, useful console-print helper with a print-like API."""
+        return {
+            "answer": (
+                assistant_message.content
+                or (
+                    "I can help analyze sales, profit, "
+                    "products, countries, segments and "
+                    "other financial data."
+                )
+            ),
 
-    def __init__(self, stream=None):
-        self.stream = stream or sys.stdout
+            "rows": [],
+        }
 
-    def write(self, value):
-        text = "" if value is None else str(value)
-        self.stream.write(text)
-        return len(text)
+    # ========================================================
+    # EXECUTE TOOL
+    # ========================================================
 
-    def flush(self):
-        if hasattr(self.stream, "flush"):
-            self.stream.flush()
-        return None
+    tool_call = (
+        assistant_message.tool_calls[0]
+    )
 
-    def emit(self, *values, sep=" ", end="\n", flush=False):
-        text = sep.join("" if value is None else str(value) for value in values)
-        self.write(text + end)
-        if flush:
-            self.flush()
-        return text + end
+    function_name = (
+        tool_call.function.name
+    )
 
-    def __call__(self, *values, sep=" ", end="\n", flush=False):
-        return self.emit(*values, sep=sep, end=end, flush=flush)
+    arguments = json.loads(
+        tool_call.function.arguments
+    )
+
+    context_text = ""
+
+    if context:
+        context_text = f"""
+
+MOST RECENT ANALYSIS CONTEXT
+
+metric: {context.get("metric")}
+group_by: {context.get("group_by")}
+entity: {context.get("entity")}
+
+For follow-up questions, preserve this context unless
+the user explicitly changes it.
+
+If the user says "it", "this", or "that",
+the most recent entity is:
+
+{context.get("entity")}
+
+If the user says "compare it with X",
+preserve:
+
+metric = {context.get("metric")}
+group_by = {context.get("group_by")}
+
+and compare:
+
+{context.get("entity")} with X.
+"""
+
+    # Always initialize the follow-up message list before
+    # appending history and the latest user question.
+    messages: list[dict] = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT + context_text,
+        }
+    ]
+
+
+    if history:
+        for item in history[-8:]:
+            role = item.get("role")
+            content = item.get("content")
+
+            if role in {"user", "assistant"} and content:
+                messages.append({
+                    "role": role,
+                    "content": content,
+                })
+
+    messages.append({
+        "role": "user",
+        "content": question,
+    })
+
+    # --------------------------------------------------------
+    # FINANCIAL SUMMARY
+    # --------------------------------------------------------
+
+    if function_name == "get_financial_summary":
+
+        result = get_financial_summary(
+            metric=arguments.get(
+                "metric",
+                "sales",
+            ),
+            group_by=arguments.get(
+                "group_by",
+                "total",
+            ),
+            year=arguments.get(
+                "year"
+            ),
+            country=arguments.get(
+                "country"
+            ),
+            product=arguments.get(
+                "product"
+            ),
+            segment=arguments.get(
+                "segment"
+            ),
+            limit=arguments.get(
+                "limit",
+                20,
+            ),
+        )
+
+        return {
+            "answer": (
+                format_summary_answer(
+                    result
+                )
+            ),
+            "rows": result["rows"],
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
+        }
+
+    # --------------------------------------------------------
+    # COMPARISON
+    # --------------------------------------------------------
+
+    if function_name == "get_financial_comparison":
+
+        result = get_financial_comparison(
+            metric=arguments["metric"],
+            group_by=arguments["group_by"],
+            values=arguments["values"],
+            year=arguments.get("year"),
+        )
+
+        return {
+            "answer": (
+                format_comparison_answer(
+                    result
+                )
+            ),
+            "rows": result["rows"],
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
+        }
+
+    # --------------------------------------------------------
+    # PERCENTAGE OF TOTAL
+    # --------------------------------------------------------
+
+    if function_name == "get_percentage_of_total":
+
+        result = get_percentage_of_total(
+            metric=arguments["metric"],
+            group_by=arguments["group_by"],
+            value=arguments["value"],
+            year=arguments.get("year"),
+        )
+
+        rows = [
+            {
+                "group_name": result["value"],
+                "selected_value": result["selected_value"],
+                "total_value": result["total_value"],
+                "percentage": round(
+                    number_to_float(
+                        result["percentage"]
+                    ),
+                    2,
+                ),
+            }
+        ]
+
+        return {
+            "answer": (
+                format_percentage_answer(
+                    result
+                )
+            ),
+            "rows": rows,
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
+        }
+
+    if function_name == "get_financial_statistics":
+        result = get_financial_statistics(
+            metric=arguments["metric"],
+            aggregation=arguments["aggregation"],
+            group_by=arguments["group_by"],
+            year=arguments.get("year"),
+            from_date=arguments.get("from_date"),
+            to_date=arguments.get("to_date"),
+            country=arguments.get("country"),
+            product=arguments.get("product"),
+            segment=arguments.get("segment"),
+            order=arguments.get("order", "highest"),
+            limit=arguments.get("limit", 20),
+        )
+
+        rows = result["rows"]
+        readable_metric = result["metric"].replace("_", " ")
+        readable_aggregation = result["aggregation"]
+
+        if not rows:
+            answer = (
+                "No matching financial records were found."
+            )
+        elif result["group_by"] == "total":
+            answer = (
+                f"The {readable_aggregation} "
+                f"{readable_metric} is "
+                f"{format_number(rows[0]['value'])}."
+            )
+        else:
+            first = rows[0]
+            answer = (
+                f"The {result['order']} "
+                f"{readable_aggregation} "
+                f"{readable_metric} by "
+                f"{result['group_by']} is "
+                f"{first['group_name']} with "
+                f"{format_number(first['value'])}."
+            )
+
+        return {
+            "answer": answer,
+            "rows": rows,
+            "group_by": result["group_by"],
+            "metric": result["metric"],
+            "source": "financials",
+        }
+
+    # --------------------------------------------------------
+    # UNKNOWN TOOL
+    # --------------------------------------------------------
+
+    return {
+        "answer": (
+            "Unsupported financial reporting operation."
+        ),
+        "rows": [],
+    }
