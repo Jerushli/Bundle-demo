@@ -36,18 +36,23 @@
 
 
 
+  type Conversation = {
+
+    id: string;
+
+    title: string;
+
+    messages: Message[];
+
+    context? : AnalysisContext | null;
+
+  };
+
   type AnalysisContext = {
     metric: string | null;
     group_by: string | null;
     entity: string | null;
-  };
-
-  type Conversation = {
-    id: string;
-    title: string;
-    messages: Message[];
-    context?: AnalysisContext | null;
-  };
+   }; 
 
   type ChatResponse = {
 
@@ -556,52 +561,6 @@
 
   }
 
-  function updateAnalysisContext(
-    conversationId: string,
-    data: ChatResponse
-  ) {
-  if (
-    data.source !== 'financials' ||
-    !data.metric ||
-    !data.group_by
-  ) {
-    return;
-  }
-
-  let entity: string | null = null;
-
-  if (
-    Array.isArray(data.rows) &&
-    data.rows.length > 0 &&
-    data.rows[0].group_name !== undefined &&
-    data.rows[0].group_name !== null
-  ) {
-    entity = String(
-      data.rows[0].group_name
-    );
-  }
-
-  conversations = conversations.map(
-    (conversation) => {
-      if (conversation.id !== conversationId) {
-        return conversation;
-      }
-
-      return {
-        ...conversation,
-
-        context: {
-          metric: data.metric ?? null,
-          group_by: data.group_by ?? null,
-          entity
-        }
-      };
-    }
-  );
-
-  saveConversations();
-  }
-
 
 
   // ------------------------------------------
@@ -655,6 +614,10 @@
 
 
     if (!question || sending) return;
+
+    const previousMessages = getMessages().slice(-8);
+
+
 
     error = '';
 
@@ -714,31 +677,15 @@
 
 
 
-    // Capture the conversation BEFORE adding
-    // the current question.
+    addMessage(conversationId, {
 
-  const conversationBeforeQuestion =
-    conversations.find(
-    (conversation) =>
-      conversation.id === conversationId
-  );
+      id: generateId(),
 
-const previousMessages =
-  conversationBeforeQuestion?.messages.slice(-8)
-  ?? [];
+      role: 'user',
 
-const analysisContext =
-  conversationBeforeQuestion?.context
-  ?? null;
+      text: question
 
-
-// Display user message.
-
-addMessage(conversationId, {
-  id: generateId(),
-  role: 'user',
-  text: question
-  });
+    });
 
 
 
@@ -777,35 +724,20 @@ addMessage(conversationId, {
             }
           : null);
 
-      const requestPayload = {
-        message: question,
-
-        history: previousMessages.map(
-         (message) => ({
-         role: message.role,
-         content: message.text
-      })
-    ),
-
-    context: analysisContext
-  };
-
-  console.log(
-  'REQUEST TO BACKEND:',
-  requestPayload
- );
-
-  const response = await fetch(API_URL, {
-    method: 'POST',
-
-    headers: {
-      'Content-Type': 'application/json'
-    },
-
-    body: JSON.stringify(
-     requestPayload
-   )
-  });
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message: question,
+          history: currentMessages.slice(-8).map((message) => ({
+            role: message.role,
+            content: message.text
+          })),
+          context: analysisContext
+        })
+      });
 
 
 
@@ -918,10 +850,6 @@ addMessage(conversationId, {
         metric: data.metric
 
       });
-      updateAnalysisContext(
-      conversationId,
-      data
-    );
 
 
 
