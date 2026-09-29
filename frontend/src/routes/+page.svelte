@@ -2,6 +2,31 @@
 
   import { onMount } from 'svelte';
 
+  import { Bar, Line } from 'svelte-chartjs';
+
+  import {
+    Chart as ChartJS,
+    CategoryScale,
+    LinearScale,
+    BarElement,
+    LineElement,
+    PointElement,
+    Title,
+    Tooltip,
+    Legend
+  } from 'chart.js';
+
+  ChartJS.register(
+    CategoryScale,
+    LinearScale,
+    BarElement,
+    LineElement,
+    PointElement,
+    Title,
+    Tooltip,
+    Legend
+  );
+
 
 
   // ------------------------------------------
@@ -234,6 +259,93 @@
     return titleCase(column);
 
   }
+   
+   function getChartType(message: Message): 'bar' | 'line' | null {
+  if (
+    message.role !== 'assistant' ||
+    message.source !== 'financials' ||
+    !message.rows ||
+    message.rows.length === 0 ||
+    !message.group_by ||
+    message.group_by === 'total'
+  ) {
+    return null;
+  }
+
+  if (
+    message.group_by === 'month' ||
+    message.group_by === 'year'
+  ) {
+    return 'line';
+  }
+
+  return 'bar';
+ }
+
+ function getChartData(message: Message) {
+  const rows = message.rows ?? [];
+
+  return {
+    labels: rows.map((row) =>
+      String(
+        row.group_name ??
+        row.month_name ??
+        row.year ??
+        'Unknown'
+      )
+    ),
+
+    datasets: [
+      {
+        label: titleCase(message.metric ?? 'Value'),
+
+        data: rows.map((row) => {
+          const value =
+            row.value ??
+            row.total ??
+            0;
+
+          return Number(value);
+        })
+      }
+    ]
+   };
+  }
+
+function getChartOptions(message: Message) {
+  return {
+    responsive: true,
+
+    maintainAspectRatio: false,
+
+    plugins: {
+      legend: {
+        display: true
+      },
+
+      title: {
+        display: true,
+
+        text:
+          `${titleCase(message.metric ?? 'Value')} by ` +
+          `${titleCase(message.group_by ?? 'Group')}`
+      }
+    },
+
+    scales: {
+      y: {
+        beginAtZero: true
+      }
+    }
+    };
+  }
+
+
+
+
+
+
+
 
 
   function isMoneyMetric(metric?: string): boolean {
@@ -1393,9 +1505,25 @@
 
                 {#if message.rows && message.rows.length > 0}
 
+  {#if getChartType(message)}
+    <div class="chart-wrapper">
 
+      {#if getChartType(message) === 'line'}
+        <Line
+          data={getChartData(message)}
+          options={getChartOptions(message)}
+        />
+      {:else}
+        <Bar
+          data={getChartData(message)}
+          options={getChartOptions(message)}
+        />
+      {/if}
 
-                  <div class="table-wrapper">
+    </div>
+  {/if}
+
+  <div class="table-wrapper">
 
 
 
@@ -2336,6 +2464,24 @@
     max-width: 100%;
 
   }
+
+  .chart-wrapper {
+  width: 100%;
+  height: 320px;
+  margin-top: 18px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+@media (max-width: 768px) {
+  .chart-wrapper {
+    height: 260px;
+    padding: 10px;
+  }
+}
 
 
 

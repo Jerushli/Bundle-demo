@@ -44,5 +44,9 @@
 	},
 	"keywords": [
 		"svelte"
-	]
+	],
+	"dependencies": {
+		"chart.js": "^4.5.1",
+		"svelte-chartjs": "^4.0.1"
+	}
 }
