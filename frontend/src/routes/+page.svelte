@@ -1,8 +1,9 @@
+
 <script lang="ts">
 
   import { onMount } from 'svelte';
 
-  import { Bar, Line } from 'svelte-chartjs';
+  import { Bar, Line, Pie } from 'svelte-chartjs';
 
   import {
     Chart as ChartJS,
@@ -11,23 +12,43 @@
     BarElement,
     LineElement,
     PointElement,
+    ArcElement,
     Title,
     Tooltip,
     Legend
   } from 'chart.js';
 
-  ChartJS.register(
+  // Avoid passing an undefined registry item to Chart.js (which throws while
+  // reading its `name`); this also keeps startup safe across Chart.js builds.
+  const chartRegistryItems = [
     CategoryScale,
     LinearScale,
     BarElement,
     LineElement,
     PointElement,
+    ArcElement,
     Title,
     Tooltip,
     Legend
+  ].filter(
+    (item): item is NonNullable<typeof item> =>
+      item != null && typeof (item as { id?: unknown }).id === 'string'
   );
 
+  ChartJS.register(...chartRegistryItems);
 
+
+  // ------------------------------------------
+  // Authentication - Login page
+  //-------------------------------------------
+
+  let loginUsername = $state('');
+  let loginPassword = $state('');
+  let authToken = $state<string | null>(null);
+  let loginError = $state('');
+  let loggingIn = $state(false);
+
+  const AUTH_TOKEN_KEY = 'bundle-data-assistant-token';
 
   // ------------------------------------------
 
@@ -53,7 +74,7 @@
 
     group_by?: string;
 
-    source?: string;
+    source?: 'orders' | 'financials';
 
     metric?: string;
 
@@ -77,6 +98,12 @@
     metric: string | null;
     group_by: string | null;
     entity: string | null;
+
+    year?: number | null;
+    country?: string | null;
+    product?: string | null;
+    segment?: string | null;
+
    }; 
 
   type ChatResponse = {
@@ -87,9 +114,14 @@
 
     group_by?: string;
 
-    source?: string;
+    source?: 'orders' | 'financials';
 
     metric?: string;
+
+    year?: number | null;
+    country?: string | null;
+    product?: string | null;
+    segment?: string | null;
 
   };
 
@@ -133,7 +165,7 @@
   } | null>(null);
 
 
-  let chatContainer: HTMLDivElement;
+  let chatContainer = $state<HTMLDivElement>();
 
 
 
@@ -174,6 +206,75 @@
 
 
 
+  async function login() {
+  loginError = '';
+  loggingIn = true;
+
+  try {
+    const response = await fetch('/api/login', {
+      method: 'POST',
+
+      headers: {
+       'Content-Type': 'application/json'
+    },
+
+      body: JSON.stringify({
+        username: loginUsername.trim(),
+        password: loginPassword
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        'Invalid username or password.'
+      );
+    }
+
+    const data = await response.json();
+
+    if (!data.access_token) {
+      throw new Error(
+        'Login response did not include a token.'
+      );
+    }
+
+    authToken = data.access_token;
+
+    localStorage.setItem(
+      AUTH_TOKEN_KEY,
+      data.access_token
+    );
+
+    loginPassword = '';
+  } catch (cause) {
+    loginError =
+      cause instanceof Error
+        ? cause.message
+        : 'Login failed.';
+  } finally {
+    loggingIn = false;
+  }
+}
+
+
+function handleLoginSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  void login();
+}
+
+function logout() {
+  authToken = null;
+
+  localStorage.removeItem(
+    AUTH_TOKEN_KEY
+  );
+
+  loginUsername = '';
+  loginPassword = '';
+
+  newChat();
+}
+
   function generateId(): string {
 
     if (
@@ -210,7 +311,77 @@
 
   }
 
+  function updateAnalysisContext(
+    conversationId: string,
+    data: ChatResponse
+  ) {
+    const conversation =
+      conversations.find(
+        (item) => item.id === conversationId
+      );
 
+    const previousContext =
+      conversation?.context ?? null;
+
+    const firstRow =
+      Array.isArray(data.rows) &&
+      data.rows.length > 0
+        ? data.rows[0]
+        : null;
+
+    const entity =
+      firstRow &&
+      typeof firstRow.group_name === 'string'
+        ? firstRow.group_name
+        : previousContext?.entity ?? null;
+
+    const nextContext: AnalysisContext = {
+      metric:
+        data.metric ??
+        previousContext?.metric ??
+        null,
+
+      group_by:
+        data.group_by ??
+        previousContext?.group_by ??
+        null,
+
+      entity,
+
+      year:
+        data.year ??
+        previousContext?.year ??
+        null,
+
+      country:
+        data.country ??
+        previousContext?.country ??
+        null,
+
+      product:
+        data.product ??
+        previousContext?.product ??
+        null,
+
+      segment:
+        data.segment ??
+        previousContext?.segment ??
+        null
+    };
+
+    conversations = conversations.map((item) => {
+      if (item.id !== conversationId) {
+        return item;
+      }
+
+      return {
+        ...item,
+        context: nextContext
+      };
+    });
+
+    saveConversations();
+  }
 
   function getMessages(): Message[] {
 
@@ -260,7 +431,10 @@
 
   }
    
-   function getChartType(message: Message): 'bar' | 'line' | null {
+   function getChartType(
+  message: Message
+): 'bar' | 'line' | 'pie' | null {
+
   if (
     message.role !== 'assistant' ||
     message.source !== 'financials' ||
@@ -279,11 +453,176 @@
     return 'line';
   }
 
+  const firstRow = message.rows[0];
+
+  if (
+    firstRow.percentage !== undefined &&
+    firstRow.percentage !== null
+  ) {
+    return 'pie';
+  }
+
   return 'bar';
- }
+}
+
+ function downloadRowsAsCsv(message: Message) {
+  const rows = message.rows ?? [];
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  const columns = getTableColumns(rows);
+
+  const escapeCsvValue = (
+    value: string | number | null | undefined
+  ): string => {
+    if (value === null || value === undefined) {
+      return '';
+    }
+
+    const text = String(value);
+
+    return `"${text.replaceAll('"', '""')}"`;
+  };
+
+  const header = columns
+    .map((column) =>
+      escapeCsvValue(
+        getColumnLabel(column, message)
+      )
+    )
+    .join(',');
+
+  const body = rows.map((row) =>
+    columns
+      .map((column) =>
+        escapeCsvValue(row[column])
+      )
+      .join(',')
+  );
+
+  const csv = [
+    header,
+    ...body
+  ].join('\n');
+
+  const blob = new Blob(
+    [csv],
+    {
+      type: 'text/csv;charset=utf-8;'
+    }
+  );
+
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement('a');
+
+  const metric =
+    message.metric ?? 'financial-data';
+
+  const group =
+    message.group_by ?? 'results';
+
+  link.href = url;
+
+  link.download =
+    `${metric}-by-${group}.csv`;
+
+  document.body.appendChild(link);
+
+  link.click();
+
+  document.body.removeChild(link);
+
+  URL.revokeObjectURL(url);
+}
+
+function downloadChartAsPng(message: Message) {
+  const chartContainer = document.getElementById(
+    `chart-${message.id}`
+  );
+
+  if (!chartContainer) {
+    return;
+  }
+
+  const canvas =
+    chartContainer.querySelector('canvas');
+
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    return;
+  }
+
+  const imageUrl = canvas.toDataURL(
+    'image/png',
+    1.0
+  );
+
+  const link = document.createElement('a');
+
+  const metric =
+    message.metric ?? 'financial-data';
+
+  const group =
+    message.group_by ?? 'chart';
+
+  link.href = imageUrl;
+
+  link.download =
+    `${metric}-by-${group}.png`;
+
+  document.body.appendChild(link);
+
+  link.click();
+
+  document.body.removeChild(link);
+}
+
 
  function getChartData(message: Message) {
   const rows = message.rows ?? [];
+
+  const chartType = getChartType(message);
+
+  if (chartType === 'pie') {
+    const first = rows[0];
+
+    const selected = Number(
+      first.selected_value ?? 0
+    );
+
+    const total = Number(
+      first.total_value ?? 0
+    );
+
+    const remainder = Math.max(
+      total - selected,
+      0
+    );
+
+    return {
+      labels: [
+        String(
+          first.group_name ?? 'Selected'
+        ),
+        'Remaining'
+      ],
+
+      datasets: [
+        {
+          label: titleCase(
+            message.metric ?? 'Value'
+          ),
+
+          data: [
+            selected,
+            remainder
+          ]
+        }
+      ]
+    };
+  }
 
   return {
     labels: rows.map((row) =>
@@ -297,30 +636,49 @@
 
     datasets: [
       {
-        label: titleCase(message.metric ?? 'Value'),
+        label: titleCase(
+          message.metric ?? 'Value'
+        ),
 
-        data: rows.map((row) => {
-          const value =
+        data: rows.map((row) =>
+          Number(
             row.value ??
             row.total ??
-            0;
-
-          return Number(value);
-        })
+            0
+          )
+        )
       }
     ]
-   };
+  };
   }
 
 function getChartOptions(message: Message) {
+  const chartType = getChartType(message);
+
+  const isMoney = isMoneyMetric(
+    message.metric
+  );
+
   return {
     responsive: true,
 
     maintainAspectRatio: false,
 
+    interaction: {
+      mode: 'index' as const,
+      intersect: false
+    },
+
     plugins: {
       legend: {
-        display: true
+        display: chartType === 'pie',
+
+        position: 'bottom' as const,
+
+        labels: {
+          boxWidth: 12,
+          padding: 16
+        }
       },
 
       title: {
@@ -328,17 +686,107 @@ function getChartOptions(message: Message) {
 
         text:
           `${titleCase(message.metric ?? 'Value')} by ` +
-          `${titleCase(message.group_by ?? 'Group')}`
+          `${titleCase(message.group_by ?? 'Group')}`,
+
+        font: {
+          size: 16,
+          weight: 'bold' as const
+        },
+
+        padding: {
+          bottom: 18
+        }
+      },
+
+      tooltip: {
+        callbacks: {
+          label: (context: any) => {
+            const rawValue =
+              typeof context.raw === 'number'
+                ? context.raw
+                : Number(context.raw ?? 0);
+
+            const label =
+              context.dataset?.label
+                ? `${context.dataset.label}: `
+                : '';
+
+            if (isMoney) {
+              return (
+                label +
+                new Intl.NumberFormat(
+                  'en-US',
+                  {
+                    style: 'currency',
+                    currency: 'USD',
+                    maximumFractionDigits: 2
+                  }
+                ).format(rawValue)
+              );
+            }
+
+            return (
+              label +
+              new Intl.NumberFormat(
+                'en-US',
+                {
+                  maximumFractionDigits: 2
+                }
+              ).format(rawValue)
+            );
+          }
+        }
       }
     },
 
-    scales: {
-      y: {
-        beginAtZero: true
-      }
-    }
-    };
-  }
+    scales:
+      chartType === 'pie'
+        ? undefined
+        : {
+            x: {
+              ticks: {
+                maxRotation: 45,
+                minRotation: 0
+              },
+
+              grid: {
+                display: false
+              }
+            },
+
+            y: {
+              beginAtZero: true,
+
+              ticks: {
+                callback: (value: any) => {
+                  const numericValue =
+                    Number(value);
+
+                  if (isMoney) {
+                    return new Intl.NumberFormat(
+                      'en-US',
+                      {
+                        notation: 'compact',
+                        style: 'currency',
+                        currency: 'USD',
+                        maximumFractionDigits: 1
+                      }
+                    ).format(numericValue);
+                  }
+
+                  return new Intl.NumberFormat(
+                    'en-US',
+                    {
+                      notation: 'compact',
+                      maximumFractionDigits: 1
+                    }
+                  ).format(numericValue);
+                }
+              }
+            }
+          }
+  };
+}
 
 
 
@@ -503,9 +951,16 @@ function getChartOptions(message: Message) {
 
   onMount(() => {
 
-    if (typeof localStorage === 'undefined') return;
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
 
+    const storedToken =
+     localStorage.getItem(AUTH_TOKEN_KEY);
 
+    if (storedToken) {
+    authToken = storedToken;
+    }
 
     try {
 
@@ -705,297 +1160,239 @@ function getChartOptions(message: Message) {
 
   // ------------------------------------------
 
-
-
   async function sendMessage(
+  event?: SubmitEvent
+) {
+  event?.preventDefault();
 
-    event?: SubmitEvent
+  const question = input.trim();
 
-  ) {
+  if (!question || sending) {
+    return;
+  }
 
-    console.log('SEND BUTTON CLICKED');
+  error = '';
 
+  let conversationId = activeConversationId;
 
+  // ------------------------------------------
+  // CREATE NEW CONVERSATION
+  // ------------------------------------------
 
-    event?.preventDefault();
+  if (!conversationId) {
+    conversationId = generateId();
 
+    const conversation: Conversation = {
+      id: conversationId,
 
+      title:
+        question.length > 35
+          ? question.substring(0, 35) + '...'
+          : question,
 
-    const question = input.trim();
+      messages: [],
 
+      context: null
+    };
 
+    conversations = [
+      conversation,
+      ...conversations
+    ];
 
-    if (!question || sending) return;
-
-    const previousMessages = getMessages().slice(-8);
-
-
-
-    error = '';
-
-
-
-    let conversationId = activeConversationId;
-
-
-
-    // Create a conversation if this is a new chat.
-
-
-
-    if (!conversationId) {
-
-      conversationId = generateId();
-
-
-
-      const conversation: Conversation = {
-
-        id: conversationId,
-
-        title:
-
-          question.length > 35
-
-            ? question.substring(0, 35) + '...'
-
-            : question,
-
-        messages: [],
-
-        context: null
-
-      };
+    activeConversationId = conversationId;
+  }
 
 
+  // ------------------------------------------
+  // CAPTURE PREVIOUS STATE
+  // BEFORE ADDING CURRENT QUESTION
+  // ------------------------------------------
 
-      conversations = [
+  const conversationBeforeQuestion =
+    conversations.find(
+      (conversation) =>
+        conversation.id === conversationId
+    );
 
-        conversation,
+  const previousMessages =
+    conversationBeforeQuestion?.messages.slice(-8)
+    ?? [];
 
-        ...conversations
-
-      ];
-
-
-
-      activeConversationId = conversationId;
-
-    }
-
-
-
-    // Display user message.
+  const analysisContext =
+    conversationBeforeQuestion?.context
+    ?? null;
 
 
+  // ------------------------------------------
+  // DISPLAY USER MESSAGE
+  // ------------------------------------------
 
-    addMessage(conversationId, {
-
+  addMessage(
+    conversationId,
+    {
       id: generateId(),
-
       role: 'user',
-
       text: question
+    }
+  );
 
-    });
+  input = '';
+  sending = true;
 
-
-
-    input = '';
-
-
-
-    sending = true;
+  scrollToBottom();
 
 
+  // ------------------------------------------
+  // SEND TO BACKEND
+  // ------------------------------------------
 
-    scrollToBottom();
-
-
-
-    try {
-
-      // Send question to FastAPI.
-
-      const currentMessages = getMessages();
-      const currentConversation = getActiveConversation();
-
-      const analysisContext =
-        currentConversation?.context ??
-        (lastAnalysis
-          ? {
-              metric: lastAnalysis.metric ?? null,
-              group_by: lastAnalysis.group_by ?? null,
-              entity:
-                lastAnalysis.rows &&
-                lastAnalysis.rows.length > 0 &&
-                lastAnalysis.rows[0]?.group_name !== undefined &&
-                lastAnalysis.rows[0]?.group_name !== null
-                  ? String(lastAnalysis.rows[0].group_name)
-                  : null
-            }
-          : null);
-
-      const response = await fetch(API_URL, {
+  try {
+    const response = await fetch(
+      API_URL,
+      {
         method: 'POST',
+
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+
+          ...(authToken
+            ? {
+                Authorization:
+                  `Bearer ${authToken}`
+              }
+            : {})
         },
+
         body: JSON.stringify({
           message: question,
-          history: currentMessages.slice(-8).map((message) => ({
-            role: message.role,
-            content: message.text
-          })),
+
+          history:
+            previousMessages.map(
+              (message) => ({
+                role: message.role,
+                content: message.text
+              })
+            ),
+
           context: analysisContext
         })
-      });
-
-
-
-      if (!response.ok) {
-
-        let detail = '';
-
-
-
-        try {
-
-          const failure = await response.json();
-
-
-
-          if (typeof failure.detail === 'string') {
-
-            detail = failure.detail;
-
-          }
-
-        } catch {
-
-          // Use the HTTP status if the response is not JSON.
-
-        }
-
-
-
-        throw new Error(
-
-          detail || `Backend returned HTTP ${response.status}`
-
-        );
-
       }
+    );
 
 
+    // ------------------------------------------
+    // AUTH FAILURE
+    // ------------------------------------------
 
-      const data: ChatResponse = await response.json();
+    if (response.status === 401) {
+      logout();
 
-      if (
-  data.source === 'financials' &&
-  data.metric &&
-  data.group_by
-) {
-  const entity =
-    Array.isArray(data.rows) &&
-    data.rows.length > 0 &&
-    data.rows[0].group_name !== undefined &&
-    data.rows[0].group_name !== null
-      ? String(data.rows[0].group_name)
-      : null;
-
-  conversations = conversations.map((conversation) => {
-    if (conversation.id !== conversationId) {
-      return conversation;
+      throw new Error(
+        'Your session has expired. Please log in again.'
+      );
     }
 
-    return {
-      ...conversation,
 
-      context: {
-        metric: data.metric ?? null,
-        group_by: data.group_by ?? null,
-        entity
-      }
-    };
-  });
+    // ------------------------------------------
+    // OTHER BACKEND ERROR
+    // ------------------------------------------
 
-  saveConversations();
-}
+    if (!response.ok) {
+      let detail = '';
 
+      try {
+        const failure =
+          await response.json();
 
-
-      if (typeof data.answer !== 'string') {
-
-        throw new Error(
-
-          'The backend returned an invalid response.'
-
-        );
-
+        if (
+          typeof failure.detail === 'string'
+        ) {
+          detail = failure.detail;
+        }
+      } catch {
+        // Response may not contain JSON.
       }
 
+      throw new Error(
+        detail ||
+        `Backend returned HTTP ${response.status}`
+      );
+    }
 
 
-      // Display assistant response.
+    // ------------------------------------------
+    // READ RESPONSE
+    // ------------------------------------------
+
+    const data: ChatResponse =
+      await response.json();
+
+    if (
+      typeof data.answer !== 'string'
+    ) {
+      throw new Error(
+        'The backend returned an invalid response.'
+      );
+    }
 
 
+    // ------------------------------------------
+    // DISPLAY ASSISTANT MESSAGE
+    // ------------------------------------------
 
-      addMessage(conversationId, {
-
+    addMessage(
+      conversationId,
+      {
         id: generateId(),
-
         role: 'assistant',
-
         text: data.answer,
 
-        rows: Array.isArray(data.rows)
+        rows:
+          Array.isArray(data.rows)
+            ? data.rows
+            : [],
 
-          ? data.rows
+        group_by:
+          data.group_by,
 
-          : [],
+        source:
+          data.source,
 
-        group_by: data.group_by,
-
-        source: data.source,
-
-        metric: data.metric
-
-      });
-
-
-
-    } catch (cause) {
-
-      console.error('Chat error:', cause);
+        metric:
+          data.metric
+      }
+    );
 
 
+    // ------------------------------------------
+    // STORE ANALYSIS CONTEXT
+    // ------------------------------------------
 
-      error =
+    updateAnalysisContext(
+      conversationId,
+      data
+    );
 
-        cause instanceof Error
+  } catch (cause) {
+    console.error(
+      'Chat error:',
+      cause
+    );
 
-          ? cause.message
+    error =
+      cause instanceof Error
+        ? cause.message
+        : 'Something went wrong. Please try again.';
 
-          : 'Something went wrong. Please try again.';
+  } finally {
+    sending = false;
 
+    saveConversations();
 
-
-    } finally {
-
-      sending = false;
-
-
-
-      saveConversations();
-
-
-
-      scrollToBottom();
-
-    }
-
+    scrollToBottom();
   }
+}
 
 
 
@@ -1084,6 +1481,88 @@ function getChartOptions(message: Message) {
 
 
 
+
+{#if !authToken}
+
+  <div class="login-page">
+
+    <div class="login-card">
+
+      <div class="login-brand">
+        <div class="login-logo">
+          B
+        </div>
+
+        <div>
+          <h1>Bundle</h1>
+          <p>Data Assistant</p>
+        </div>
+      </div>
+
+      <div class="login-heading">
+        <h2>Welcome back</h2>
+
+        <p>
+          Sign in to access financial analytics.
+        </p>
+      </div>
+
+      <form
+      class="login-form"
+      onsubmit={handleLoginSubmit}
+      >
+
+        <label>
+          Username
+
+          <input
+            type="text"
+            bind:value={loginUsername}
+            autocomplete="username"
+            placeholder="Enter username"
+            disabled={loggingIn}
+          />
+        </label>
+
+        <label>
+          Password
+
+          <input
+            type="password"
+            bind:value={loginPassword}
+            autocomplete="current-password"
+            placeholder="Enter password"
+            disabled={loggingIn}
+          />
+        </label>
+
+        {#if loginError}
+          <div class="login-error">
+            {loginError}
+          </div>
+        {/if}
+
+        <button
+          class="login-button"
+          type="submit"
+          disabled={
+            loggingIn ||
+            !loginUsername.trim() ||
+            !loginPassword
+          }
+        >
+          {loggingIn
+            ? 'Signing in...'
+            : 'Sign in'}
+        </button>
+
+      </form>
+
+    </div>
+
+  </div>
+
+{:else}
 
 <div class="app">
 
@@ -1231,19 +1710,20 @@ function getChartOptions(message: Message) {
 
     <div class="sidebar-footer">
 
+  <div class="sidebar-status">
+    <div class="status-dot"></div>
+    <span>Bundle Data Assistant</span>
+  </div>
 
+  <button
+    class="logout-button"
+    type="button"
+    onclick={logout}
+  >
+    Log out
+  </button>
 
-      <div class="status-dot"></div>
-
-
-
-      <span>Bundle Data Assistant</span>
-
-
-
-    </div>
-
-
+</div>
 
   </aside>
 
@@ -1505,20 +1985,93 @@ function getChartOptions(message: Message) {
 
                 {#if message.rows && message.rows.length > 0}
 
-  {#if getChartType(message)}
-    <div class="chart-wrapper">
 
+                <!-- RANKING CONTRIBUTION VISUALIZATION -->
+
+{#if message.rows.some(
+  (row) => typeof row.contribution_percent === 'number'
+)}
+  <div class="contribution-panel">
+    <div class="contribution-heading">
+      <h3>Contribution Breakdown</h3>
+      <span>Percentage of selected total</span>
+    </div>
+
+    {#each message.rows.filter(
+      (row) => typeof row.contribution_percent === 'number'
+    ) as row, index}
+      {@const percentage = Number(row.contribution_percent)}
+      {@const barWidth = Math.max(
+        0,
+        Math.min(Math.abs(percentage), 100)
+      )}
+
+      <div class="contribution-item">
+        <div class="contribution-details">
+          <div class="contribution-name">
+            <span class="rank-number">
+              #{row.rank ?? index + 1}
+            </span>
+
+            <span>{String(row.group_name ?? 'Unknown')}</span>
+          </div>
+
+          <strong>
+            {percentage.toFixed(2)}%
+          </strong>
+        </div>
+
+        <div
+          class="contribution-track"
+          role="progressbar"
+          aria-label={`Absolute contribution magnitude for ${String(row.group_name ?? 'Unknown')}`}
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={barWidth}
+        >
+          <div
+            class="contribution-fill"
+            class:negative={percentage < 0}
+            style:width={`${barWidth}%`}
+          ></div>
+        </div>
+      </div>
+    {/each}
+
+    <p class="contribution-note">
+      Bars show absolute contribution magnitude, capped at
+      100% for display. Signed percentages above are the
+      actual calculated values.
+    </p>
+  </div>
+{/if}
+
+  {#if getChartType(message)}
+    <div class="chart-wrapper"
+    id={`chart-${message.id}`}
+    >
       {#if getChartType(message) === 'line'}
-        <Line
-          data={getChartData(message)}
-          options={getChartOptions(message)}
-        />
-      {:else}
-        <Bar
-          data={getChartData(message)}
-          options={getChartOptions(message)}
-        />
-      {/if}
+
+  <Line
+    data={getChartData(message)}
+    options={getChartOptions(message)}
+  />
+
+{:else if getChartType(message) === 'pie'}
+
+  <Pie
+    data={getChartData(message)}
+    options={getChartOptions(message)}
+  />
+
+{:else}
+
+  <Bar
+    data={getChartData(message)}
+    options={getChartOptions(message)}
+  />
+
+{/if}
 
     </div>
   {/if}
@@ -1610,6 +2163,34 @@ function getChartOptions(message: Message) {
 
 
                   </div>
+
+          <div class="result-actions">
+
+  <button
+    class="download-button"
+    type="button"
+    onclick={() =>
+      downloadRowsAsCsv(message)
+    }
+  >
+    ↓ Download CSV
+  </button>
+
+  {#if getChartType(message)}
+
+    <button
+      class="download-button"
+      type="button"
+      onclick={() =>
+        downloadChartAsPng(message)
+      }
+    >
+      ↓ Download Chart
+    </button>
+
+  {/if}
+
+</div>
 
 
 
@@ -1801,15 +2382,16 @@ function getChartOptions(message: Message) {
 
 
 
-</div>
+ </div>
 
+{/if}
 
 
 
 
 <style>
 
-  :global(\*) {
+  :global(*) {
 
     box-sizing: border-box;
 
@@ -1858,6 +2440,64 @@ function getChartOptions(message: Message) {
     font: inherit;
 
   }
+
+  .result-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+
+  gap: 10px;
+
+  margin-top: 12px;
+
+  flex-wrap: wrap;
+}
+
+.download-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-height: 38px;
+
+  padding: 8px 14px;
+
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+
+  background: #ffffff;
+
+  color: #111827;
+
+  font-size: 13px;
+  font-weight: 600;
+
+  cursor: pointer;
+
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.download-button:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.download-button:active {
+  transform: translateY(1px);
+}
+
+@media (max-width: 480px) {
+  .result-actions {
+    flex-direction: column;
+    justify-content: stretch;
+  }
+
+  .download-button {
+    width: 100%;
+  }
+}
 
 
 
@@ -2035,9 +2675,241 @@ function getChartOptions(message: Message) {
 
   }
 
+  /* Login Page */
+
+  .login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #f7f7f8;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow:
+    0 10px 30px
+    rgba(0, 0, 0, 0.06);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.login-logo {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #111827;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 20px;
+}
+
+.login-heading {
+  margin-bottom: 24px;
+}
+
+.login-heading h2 {
+  margin: 0 0 6px;
+}
+
+.login-heading p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.login-form input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 14px;
+  outline: none;
+}
+
+.login-button {
+  min-height: 44px;
+  border: none;
+  border-radius: 10px;
+  background: #111827;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logout-button {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.logout-button:hover {
+  background: #f3f4f6;
+}
 
 
 
+/* CONTRIBUTION BREAKDOWN */
+
+.contribution-panel {
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.contribution-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+}
+
+.contribution-heading h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  color: #111827;
+}
+
+.contribution-heading span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.contribution-item {
+  margin-bottom: 18px;
+}
+
+.contribution-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.contribution-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rank-number {
+  color: #64748b;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.contribution-details strong {
+  font-size: 13px;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.contribution-track {
+  height: 11px;
+  background: #edf2f7;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.contribution-fill {
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    #2563eb,
+    #60a5fa
+  );
+  border-radius: 999px;
+  transition: width 350ms ease;
+}
+
+.contribution-fill.negative {
+  background: #ef4444;
+}
+
+.contribution-note {
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.5;
+  margin: 12px 0 0;
+}
+
+@media (max-width: 600px) {
+  .contribution-panel {
+    padding: 14px;
+  }
+
+  .contribution-details {
+    font-size: 12px;
+  }
+}
 
   /* HISTORY */
 
@@ -2446,7 +3318,6 @@ function getChartOptions(message: Message) {
 
 
 
-
   /* TABLES */
 
 
@@ -2467,19 +3338,40 @@ function getChartOptions(message: Message) {
 
   .chart-wrapper {
   width: 100%;
-  height: 320px;
+  height: 340px;
+
   margin-top: 18px;
   margin-bottom: 18px;
-  padding: 16px;
+
+  padding: 18px;
+
   border: 1px solid #e5e7eb;
-  border-radius: 14px;
+
+  border-radius: 16px;
+
   background: #ffffff;
+
+  overflow: hidden;
 }
 
 @media (max-width: 768px) {
   .chart-wrapper {
-    height: 260px;
-    padding: 10px;
+    height: 280px;
+
+    padding: 12px;
+
+    margin-top: 14px;
+    margin-bottom: 14px;
+
+    border-radius: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .chart-wrapper {
+    height: 240px;
+
+    padding: 8px;
   }
 }
 

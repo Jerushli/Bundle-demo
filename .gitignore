@@ -17,3 +17,19 @@ venv/
 node_modules/
 frontend/.svelte-kit/
 frontend/build/
+
+# Frontend dependencies and builds
+
+frontend/node_modules/
+
+
+# Generated RAG documents and models
+rag_test/data/
+rag_test/**/*.jsonl
+rag_test/**/*.jsonl.gz
+rag_test/**/*.zip
+.cache/
+models/
+
+# Miscellaneous
+*.log
