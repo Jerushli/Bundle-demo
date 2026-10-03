@@ -33,3 +33,7 @@ models/
 
 # Miscellaneous
 *.log
+
+.venv_rag/
+.env.*
+!.env.example
