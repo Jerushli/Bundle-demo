@@ -571,19 +571,19 @@ MONTHLY_TREND_TOOL = {
                 },
 
                 "year": {
-                    "type": "integer"
+                    "type": ["integer", "null"]
                 },
 
                 "country": {
-                    "type": "string"
+                    "type": ["string", "null"]
                 },
 
                 "product": {
-                    "type": "string"
+                    "type": ["string", "null"]
                 },
 
                 "segment": {
-                    "type": "string"
+                    "type": ["string", "null"]
                 },
             },
 
@@ -3045,12 +3045,165 @@ the user explicitly changes it.
             **filters,
         }
 
-    # --------------------------------------------------------
-    # UNKNOWN TOOL
-    # --------------------------------------------------------
+    # ==========================================================
+    # MONTHLY TREND ANALYSIS
+    # ==========================================================
 
-    return {
-        "answer": "Unsupported financial reporting operation.",
-        "rows": [],
-        "tool_name": function_name,
-    }
+    if function_name == "get_monthly_trend":
+
+        metric = arguments.get("metric", "sales")
+        year = arguments.get("year")
+
+        month_order = {
+            "january": 1,
+            "february": 2,
+            "march": 3,
+            "april": 4,
+            "may": 5,
+            "june": 6,
+            "july": 7,
+            "august": 8,
+            "september": 9,
+            "october": 10,
+            "november": 11,
+            "december": 12,
+        }
+
+        # A single year is required because the existing
+        # monthly summary uses month names without
+        # necessarily preserving year-month identity.
+        if year is None:
+            return {
+                "answer": (
+                    "Please specify a year for the monthly trend."
+                ),
+                "rows": [],
+                "group_by": "month",
+                "metric": metric,
+                "source": "financials",
+                "tool_name": function_name,
+            }
+
+        result = get_financial_summary(
+            metric=metric,
+            group_by="month",
+            year=year,
+            country=arguments.get("country"),
+            product=arguments.get("product"),
+            segment=arguments.get("segment"),
+            limit=20,
+        )
+
+        source_rows = result.get("rows", [])
+
+        monthly_rows = []
+
+        for row in source_rows:
+            label = str(
+                row.get("group_name")
+                or row.get("month_name")
+                or row.get("month")
+                or ""
+            ).strip()
+
+            month_num = month_order.get(label.lower())
+
+            if month_num is None:
+                month_num = {
+                    name[:3]: number
+                    for name, number in month_order.items()
+                }.get(label.lower()[:3])
+
+            if month_num is None:
+                continue
+
+            raw_value = row.get("value")
+
+            if raw_value is None:
+                continue
+
+            monthly_rows.append({
+                "month_number": month_num,
+                "group_name": label,
+                "value": float(raw_value),
+            })
+
+        monthly_rows.sort(
+            key=lambda item: item["month_number"]
+        )
+
+        if len(monthly_rows) < 2:
+            return {
+                "answer": (
+                    "There is not enough monthly data "
+                    "to determine the trend."
+                ),
+                "rows": [],
+                "group_by": "month",
+                "metric": metric,
+                "source": "financials",
+                "tool_name": function_name,
+                "year": year,
+            }
+
+        first = monthly_rows[0]
+        last = monthly_rows[-1]
+
+        difference = last["value"] - first["value"]
+
+        if difference > 0:
+            direction = "upward"
+        elif difference < 0:
+            direction = "downward"
+        else:
+            direction = "flat"
+
+        highest = max(
+            monthly_rows,
+            key=lambda item: item["value"]
+        )
+
+        lowest = min(
+            monthly_rows,
+            key=lambda item: item["value"]
+        )
+
+        readable_metric = metric.replace("_", " ").title()
+
+        answer = (
+            f"{readable_metric} had a net {direction} "
+            f"change from {first['group_name']} to "
+            f"{last['group_name']} in {year}. "
+            f"The highest monthly value occurred in "
+            f"{highest['group_name']}, and the lowest "
+            f"in {lowest['group_name']}. "
+            "Individual months may have moved in "
+            "different directions."
+        )
+
+        return {
+            "answer": answer,
+            "rows": [
+                {
+                    "group_name": item["group_name"],
+                    "value": item["value"],
+                }
+                for item in monthly_rows
+            ],
+            "group_by": "month",
+            "metric": metric,
+            "source": "financials",
+            "tool_name": function_name,
+            "year": year,
+            "country": arguments.get("country"),
+            "product": arguments.get("product"),
+            "segment": arguments.get("segment"),
+            "trend_direction": direction,
+        }
+
+    else:
+        return {
+            "answer": "Unsupported financial reporting operation.",
+            "rows": [],
+            "tool_name": function_name,
+        }
