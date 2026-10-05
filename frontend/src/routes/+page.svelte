@@ -60,6 +60,32 @@
   let currentUser = $state<CurrentUser | null>(null);
   let authProfileLoading = $state(false);
 
+  type WorkspaceView = 'chat' | 'admin';
+
+  type ManagedUser = {
+    id: number;
+    username: string;
+    role: UserRole;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+    last_login_at: string | null;
+  };
+
+  let workspaceView = $state<WorkspaceView>('chat');
+  let managedUsers = $state<ManagedUser[]>([]);
+  let adminUsersLoading = $state(false);
+  let adminActionLoading = $state(false);
+  let adminError = $state('');
+  let adminNotice = $state('');
+
+  let newUserUsername = $state('');
+  let newUserPassword = $state('');
+  let newUserRole = $state<UserRole>('analyst');
+
+  let resetPasswordUserId = $state<number | null>(null);
+  let resetPasswordValue = $state('');
+
   const AUTH_TOKEN_KEY = 'bundle-data-assistant-token';
 
   // ------------------------------------------
@@ -347,6 +373,10 @@ function logout() {
   authToken = null;
   currentUser = null;
   authProfileLoading = false;
+  workspaceView = 'chat';
+  managedUsers = [];
+  adminError = '';
+  adminNotice = '';
 
   localStorage.removeItem(
     AUTH_TOKEN_KEY
@@ -1571,6 +1601,267 @@ function getChartOptions(message: Message) {
   }
 
 
+  async function adminRequest(
+    path: string,
+    options: RequestInit = {}
+  ) {
+    if (!authToken) {
+      throw new Error('Authentication required.');
+    }
+
+    const response = await fetch(path, {
+      ...options,
+      headers: {
+        ...(options.body
+          ? { 'Content-Type': 'application/json' }
+          : {}),
+        Authorization: `Bearer ${authToken}`,
+        ...(options.headers ?? {})
+      }
+    });
+
+    if (response.status === 401) {
+      logout();
+      throw new Error('Your session has expired. Please log in again.');
+    }
+
+    if (!response.ok) {
+      let detail = `Request failed with HTTP ${response.status}`;
+
+      try {
+        const failure = await response.json();
+        if (typeof failure.detail === 'string') {
+          detail = failure.detail;
+        }
+      } catch {
+        // Response may not contain JSON.
+      }
+
+      throw new Error(detail);
+    }
+
+    if (response.status === 204) {
+      return null;
+    }
+
+    return response.json();
+  }
+
+  async function loadManagedUsers() {
+    if (currentUser?.role !== 'admin') {
+      return;
+    }
+
+    adminUsersLoading = true;
+    adminError = '';
+
+    try {
+      const data = await adminRequest('/api/admin/users');
+
+      managedUsers = Array.isArray(data)
+        ? data.filter((item): item is ManagedUser =>
+            item &&
+            typeof item.id === 'number' &&
+            typeof item.username === 'string' &&
+            isUserRole(item.role) &&
+            typeof item.is_active === 'boolean'
+          )
+        : [];
+    } catch (cause) {
+      adminError =
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to load users.';
+    } finally {
+      adminUsersLoading = false;
+    }
+  }
+
+  function openAdminPanel() {
+    if (currentUser?.role !== 'admin') {
+      return;
+    }
+
+    workspaceView = 'admin';
+    adminNotice = '';
+    adminError = '';
+    void loadManagedUsers();
+
+    if (sidebarOpen) {
+      sidebarOpen = false;
+    }
+  }
+
+  function openChatWorkspace() {
+    workspaceView = 'chat';
+    adminError = '';
+    adminNotice = '';
+
+    if (sidebarOpen) {
+      sidebarOpen = false;
+    }
+  }
+
+  async function createManagedUser(event?: SubmitEvent) {
+    event?.preventDefault();
+
+    const username = newUserUsername.trim();
+
+    if (!username || newUserPassword.length < 10) {
+      adminError = 'Enter a username and a password with at least 10 characters.';
+      return;
+    }
+
+    adminActionLoading = true;
+    adminError = '';
+    adminNotice = '';
+
+    try {
+      const created = await adminRequest('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          username,
+          password: newUserPassword,
+          role: newUserRole
+        })
+      });
+
+      if (created) {
+        managedUsers = [...managedUsers, created as ManagedUser]
+          .sort((a, b) => a.username.localeCompare(b.username));
+      }
+
+      newUserUsername = '';
+      newUserPassword = '';
+      newUserRole = 'analyst';
+      adminNotice = 'User created successfully.';
+    } catch (cause) {
+      adminError =
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to create user.';
+    } finally {
+      adminActionLoading = false;
+    }
+  }
+
+  async function changeManagedUserRole(
+    user: ManagedUser,
+    role: UserRole
+  ) {
+    if (role === user.role) {
+      return;
+    }
+
+    adminActionLoading = true;
+    adminError = '';
+    adminNotice = '';
+
+    try {
+      const updated = await adminRequest(
+        `/api/admin/users/${user.id}/role`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ role })
+        }
+      );
+
+      managedUsers = managedUsers.map((item) =>
+        item.id === user.id
+          ? (updated as ManagedUser)
+          : item
+      );
+
+      adminNotice = `${user.username}'s role was updated.`;
+    } catch (cause) {
+      adminError =
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to update role.';
+    } finally {
+      adminActionLoading = false;
+    }
+  }
+
+  async function toggleManagedUserStatus(user: ManagedUser) {
+    adminActionLoading = true;
+    adminError = '';
+    adminNotice = '';
+
+    try {
+      const updated = await adminRequest(
+        `/api/admin/users/${user.id}/status`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            is_active: !user.is_active
+          })
+        }
+      );
+
+      managedUsers = managedUsers.map((item) =>
+        item.id === user.id
+          ? (updated as ManagedUser)
+          : item
+      );
+
+      adminNotice = `${user.username} is now ${updated.is_active ? 'active' : 'inactive'}.`;
+    } catch (cause) {
+      adminError =
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to update account status.';
+    } finally {
+      adminActionLoading = false;
+    }
+  }
+
+  function startPasswordReset(user: ManagedUser) {
+    resetPasswordUserId = user.id;
+    resetPasswordValue = '';
+    adminError = '';
+    adminNotice = '';
+  }
+
+  function cancelPasswordReset() {
+    resetPasswordUserId = null;
+    resetPasswordValue = '';
+  }
+
+  async function submitPasswordReset(user: ManagedUser) {
+    if (resetPasswordValue.length < 10) {
+      adminError = 'The new password must contain at least 10 characters.';
+      return;
+    }
+
+    adminActionLoading = true;
+    adminError = '';
+    adminNotice = '';
+
+    try {
+      await adminRequest(
+        `/api/admin/users/${user.id}/reset-password`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            new_password: resetPasswordValue
+          })
+        }
+      );
+
+      resetPasswordUserId = null;
+      resetPasswordValue = '';
+      adminNotice = `${user.username}'s password was reset.`;
+    } catch (cause) {
+      adminError =
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to reset password.';
+    } finally {
+      adminActionLoading = false;
+    }
+  }
+
   async function copyAnswer(message: Message) {
     try {
       await navigator.clipboard.writeText(message.text);
@@ -1866,6 +2157,30 @@ function getChartOptions(message: Message) {
 
 
       <p class="history-label">WORKSPACE / CONVERSATIONS</p>
+
+      <div class="workspace-switcher">
+        <button
+          type="button"
+          class:active={workspaceView === 'chat'}
+          onclick={openChatWorkspace}
+        >
+          <span>◇</span>
+          AI Workspace
+        </button>
+
+        {#if currentUser?.role === 'admin'}
+          <button
+            type="button"
+            class:active={workspaceView === 'admin'}
+            onclick={openAdminPanel}
+          >
+            <span>⌘</span>
+            User Management
+          </button>
+        {/if}
+      </div>
+
+      {#if workspaceView === 'chat'}
       <label class="history-search-label">
         <span class="sr-only">Search conversations</span>
         <span aria-hidden="true">⌕</span>
@@ -1909,6 +2224,7 @@ function getChartOptions(message: Message) {
 
 
       {/each}
+      {/if}
 
 
 
@@ -1988,7 +2304,13 @@ function getChartOptions(message: Message) {
 
 
 
-        <div class="topbar-title"><span class="topbar-path">WORKSPACE <span>/</span> AI ASSISTANT</span><strong>AI Assistant</strong><small>Ask · Analyze · Explore · Decide</small></div>
+        <div class="topbar-title">
+          <span class="topbar-path">
+            WORKSPACE <span>/</span> {workspaceView === 'admin' ? 'ADMINISTRATION' : 'AI ASSISTANT'}
+          </span>
+          <strong>{workspaceView === 'admin' ? 'User Management' : 'AI Assistant'}</strong>
+          <small>{workspaceView === 'admin' ? 'Accounts · Roles · Access' : 'Ask · Analyze · Explore · Decide'}</small>
+        </div>
 
 
 
@@ -1996,7 +2318,7 @@ function getChartOptions(message: Message) {
 
 
 
-      <div class="topbar-tools"><button type="button" class="transcript-action" onclick={downloadTranscript} title="Download this conversation as a text file" disabled={getMessages().length === 0}>↓ Export chat</button><span class="topbar-version">BUNDLE / ENTERPRISE</span><div class:viewer-badge={currentUser?.role === 'viewer'} class="topbar-badge"><span class="badge-led"></span> {currentUser?.role === 'viewer' ? 'READ ONLY' : roleLabel()}</div><div class="topbar-initial" title={currentUser ? `${currentUser.username} · ${roleLabel()}` : 'Signed in'}>{userInitial()}</div></div>
+      <div class="topbar-tools">{#if workspaceView === 'chat'}<button type="button" class="transcript-action" onclick={downloadTranscript} title="Download this conversation as a text file" disabled={getMessages().length === 0}>↓ Export chat</button>{/if}<span class="topbar-version">BUNDLE / ENTERPRISE</span><div class:viewer-badge={currentUser?.role === 'viewer'} class="topbar-badge"><span class="badge-led"></span> {currentUser?.role === 'viewer' ? 'READ ONLY' : roleLabel()}</div><div class="topbar-initial" title={currentUser ? `${currentUser.username} · ${roleLabel()}` : 'Signed in'}>{userInitial()}</div></div>
 
 
 
@@ -2008,7 +2330,7 @@ function getChartOptions(message: Message) {
 
     <!-- CHAT AREA -->
 
-
+    {#if workspaceView === 'chat'}
 
     <div
 
@@ -2615,6 +2937,226 @@ function getChartOptions(message: Message) {
 
 
     </div>
+
+    {:else if currentUser?.role === 'admin'}
+
+      <section class="admin-workspace">
+        <div class="admin-hero">
+          <div>
+            <span class="admin-overline">BUNDLE ACCESS CONTROL</span>
+            <h1>User management</h1>
+            <p>Manage workspace accounts, roles, account status, and password resets.</p>
+          </div>
+          <button
+            type="button"
+            class="admin-refresh"
+            onclick={() => void loadManagedUsers()}
+            disabled={adminUsersLoading || adminActionLoading}
+          >
+            {adminUsersLoading ? 'Refreshing…' : '↻ Refresh users'}
+          </button>
+        </div>
+
+        {#if adminError}
+          <div class="admin-alert admin-alert-error" role="alert">{adminError}</div>
+        {/if}
+
+        {#if adminNotice}
+          <div class="admin-alert admin-alert-success" role="status">{adminNotice}</div>
+        {/if}
+
+        <div class="admin-grid">
+          <section class="admin-card admin-create-card">
+            <div class="admin-card-heading">
+              <div>
+                <span>NEW ACCOUNT</span>
+                <h2>Create user</h2>
+              </div>
+              <div class="admin-card-icon">＋</div>
+            </div>
+
+            <form class="admin-create-form" onsubmit={createManagedUser}>
+              <label>
+                <span>Username</span>
+                <input
+                  type="text"
+                  bind:value={newUserUsername}
+                  autocomplete="off"
+                  placeholder="e.g. analyst3"
+                  maxlength="100"
+                  disabled={adminActionLoading}
+                  required
+                />
+              </label>
+
+              <label>
+                <span>Temporary password</span>
+                <input
+                  type="password"
+                  bind:value={newUserPassword}
+                  autocomplete="new-password"
+                  placeholder="Minimum 10 characters"
+                  minlength="10"
+                  maxlength="200"
+                  disabled={adminActionLoading}
+                  required
+                />
+              </label>
+
+              <label>
+                <span>Role</span>
+                <select bind:value={newUserRole} disabled={adminActionLoading}>
+                  <option value="analyst">Analyst</option>
+                  <option value="viewer">Viewer</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+
+              <button
+                type="submit"
+                class="admin-primary-action"
+                disabled={adminActionLoading}
+              >
+                {adminActionLoading ? 'Working…' : 'Create account'}
+              </button>
+            </form>
+          </section>
+
+          <section class="admin-card admin-summary-card">
+            <div class="admin-card-heading">
+              <div>
+                <span>ACCESS OVERVIEW</span>
+                <h2>Workspace users</h2>
+              </div>
+              <div class="admin-card-icon">◎</div>
+            </div>
+
+            <div class="admin-metrics">
+              <div>
+                <strong>{managedUsers.length}</strong>
+                <span>Total users</span>
+              </div>
+              <div>
+                <strong>{managedUsers.filter((user) => user.is_active).length}</strong>
+                <span>Active</span>
+              </div>
+              <div>
+                <strong>{managedUsers.filter((user) => user.role === 'admin').length}</strong>
+                <span>Admins</span>
+              </div>
+            </div>
+
+            <p class="admin-security-note">
+              Role changes and account status are enforced by the FastAPI backend. Hiding controls here is not the security boundary.
+            </p>
+          </section>
+        </div>
+
+        <section class="admin-card admin-users-card">
+          <div class="admin-card-heading admin-users-heading">
+            <div>
+              <span>DIRECTORY</span>
+              <h2>Accounts</h2>
+            </div>
+            <span class="admin-user-count">{managedUsers.length} USERS</span>
+          </div>
+
+          {#if adminUsersLoading}
+            <div class="admin-empty-state">Loading workspace users…</div>
+          {:else if managedUsers.length === 0}
+            <div class="admin-empty-state">No user accounts were returned.</div>
+          {:else}
+            <div class="admin-user-list">
+              {#each managedUsers as user (user.id)}
+                <article class="admin-user-row">
+                  <div class="admin-user-identity">
+                    <div class="admin-user-avatar">{user.username.charAt(0).toUpperCase()}</div>
+                    <div>
+                      <strong>{user.username}</strong>
+                      <span>ID #{user.id} · {user.is_active ? 'Active' : 'Inactive'}</span>
+                    </div>
+                  </div>
+
+                  <label class="admin-inline-field">
+                    <span>Role</span>
+                    <select
+                      value={user.role}
+                      onchange={(event) =>
+                        void changeManagedUserRole(
+                          user,
+                          (event.currentTarget as HTMLSelectElement).value as UserRole
+                        )
+                      }
+                      disabled={adminActionLoading || user.id === currentUser?.id}
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="analyst">Analyst</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                  </label>
+
+                  <div class="admin-status-cell">
+                    <span class:inactive={!user.is_active} class="admin-status-pill">
+                      <i></i>
+                      {user.is_active ? 'ACTIVE' : 'INACTIVE'}
+                    </span>
+                  </div>
+
+                  <div class="admin-row-actions">
+                    <button
+                      type="button"
+                      onclick={() => void toggleManagedUserStatus(user)}
+                      disabled={adminActionLoading || user.id === currentUser?.id}
+                    >
+                      {user.is_active ? 'Deactivate' : 'Activate'}
+                    </button>
+                    <button
+                      type="button"
+                      onclick={() => startPasswordReset(user)}
+                      disabled={adminActionLoading}
+                    >
+                      Reset password
+                    </button>
+                  </div>
+
+                  {#if resetPasswordUserId === user.id}
+                    <div class="admin-reset-panel">
+                      <label>
+                        <span>New password for {user.username}</span>
+                        <input
+                          type="password"
+                          bind:value={resetPasswordValue}
+                          minlength="10"
+                          maxlength="200"
+                          autocomplete="new-password"
+                          placeholder="Minimum 10 characters"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        class="admin-primary-action"
+                        onclick={() => void submitPasswordReset(user)}
+                        disabled={adminActionLoading}
+                      >
+                        Save password
+                      </button>
+                      <button
+                        type="button"
+                        onclick={cancelPasswordReset}
+                        disabled={adminActionLoading}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  {/if}
+                </article>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      </section>
+
+    {/if}
 
 
 
@@ -4895,6 +5437,475 @@ function getChartOptions(message: Message) {
 
   .viewer-notice {
     width: calc(100% - 20px);
+  }
+}
+
+
+
+/* =========================================================
+   RBAC STAGE 4 — ADMIN USER MANAGEMENT
+   ========================================================= */
+
+.workspace-switcher {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.workspace-switcher button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.46);
+  cursor: pointer;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 650;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.workspace-switcher button:hover,
+.workspace-switcher button.active {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.workspace-switcher button span {
+  width: 18px;
+  color: rgba(151, 238, 221, 0.72);
+  text-align: center;
+}
+
+.admin-workspace {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px clamp(18px, 3vw, 42px) 48px;
+  background:
+    radial-gradient(circle at 82% 0%, rgba(110, 232, 208, 0.045), transparent 30%),
+    radial-gradient(circle at 12% 24%, rgba(255, 255, 255, 0.025), transparent 32%);
+}
+
+.admin-hero {
+  max-width: 1180px;
+  margin: 0 auto 20px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.admin-overline,
+.admin-card-heading span {
+  display: block;
+  color: rgba(152, 238, 221, 0.62);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.admin-hero h1 {
+  margin: 7px 0 6px;
+  color: rgba(255, 255, 255, 0.96);
+  font-size: clamp(28px, 3vw, 42px);
+  font-weight: 620;
+  letter-spacing: -0.04em;
+}
+
+.admin-hero p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.admin-refresh,
+.admin-row-actions button,
+.admin-reset-panel > button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.68);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.admin-refresh:hover:not(:disabled),
+.admin-row-actions button:hover:not(:disabled),
+.admin-reset-panel > button:hover:not(:disabled) {
+  border-color: rgba(151, 238, 221, 0.23);
+  background: rgba(151, 238, 221, 0.055);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.admin-refresh:disabled,
+.admin-row-actions button:disabled,
+.admin-reset-panel > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.admin-alert {
+  max-width: 1180px;
+  margin: 0 auto 14px;
+  padding: 10px 13px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.admin-alert-error {
+  border: 1px solid rgba(255, 115, 115, 0.2);
+  background: rgba(255, 80, 80, 0.05);
+  color: rgba(255, 180, 180, 0.85);
+}
+
+.admin-alert-success {
+  border: 1px solid rgba(151, 238, 221, 0.18);
+  background: rgba(151, 238, 221, 0.045);
+  color: rgba(183, 245, 232, 0.8);
+}
+
+.admin-grid {
+  max-width: 1180px;
+  margin: 0 auto 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  gap: 14px;
+}
+
+.admin-card {
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 16px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)),
+    rgba(6, 8, 9, 0.9);
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.admin-create-card,
+.admin-summary-card {
+  padding: 18px;
+}
+
+.admin-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.admin-card-heading h2 {
+  margin: 5px 0 0;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.admin-card-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  color: rgba(151, 238, 221, 0.7);
+}
+
+.admin-create-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 150px auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.admin-create-form label,
+.admin-reset-panel label,
+.admin-inline-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.admin-create-form label > span,
+.admin-reset-panel label > span,
+.admin-inline-field > span {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.admin-create-form input,
+.admin-create-form select,
+.admin-inline-field select,
+.admin-reset-panel input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 9px;
+  outline: none;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.86);
+  padding: 0 11px;
+  font-size: 11px;
+}
+
+.admin-create-form input:focus,
+.admin-create-form select:focus,
+.admin-inline-field select:focus,
+.admin-reset-panel input:focus {
+  border-color: rgba(151, 238, 221, 0.3);
+  box-shadow: 0 0 0 3px rgba(151, 238, 221, 0.04);
+}
+
+.admin-create-form option,
+.admin-inline-field option {
+  background: #0c0e0f;
+  color: #f4f4f4;
+}
+
+.admin-primary-action {
+  min-height: 38px;
+  padding: 0 15px;
+  border: 1px solid rgba(179, 246, 233, 0.28);
+  border-radius: 9px;
+  background:
+    linear-gradient(180deg, rgba(180, 247, 233, 0.15), rgba(118, 222, 201, 0.08));
+  color: rgba(224, 255, 249, 0.92);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.admin-primary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.admin-metrics div {
+  padding: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.admin-metrics strong {
+  display: block;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 20px;
+  font-weight: 620;
+}
+
+.admin-metrics span {
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 9px;
+}
+
+.admin-security-note {
+  margin: 14px 0 0;
+  color: rgba(255, 255, 255, 0.36);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.admin-users-card {
+  max-width: 1180px;
+  margin: 0 auto;
+  overflow: hidden;
+}
+
+.admin-users-heading {
+  margin: 0;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.admin-user-count {
+  color: rgba(255, 255, 255, 0.28) !important;
+}
+
+.admin-user-list {
+  display: grid;
+}
+
+.admin-user-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.5fr) minmax(130px, 0.8fr) 110px auto;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.admin-user-row:last-child {
+  border-bottom: 0;
+}
+
+.admin-user-row:hover {
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.admin-user-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-user-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.admin-user-identity > div:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.admin-user-identity strong {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-identity span {
+  color: rgba(255, 255, 255, 0.32);
+  font-size: 8px;
+}
+
+.admin-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(162, 239, 224, 0.7);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.admin-status-pill i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(123, 231, 211, 0.84);
+  box-shadow: 0 0 9px rgba(123, 231, 211, 0.3);
+}
+
+.admin-status-pill.inactive {
+  color: rgba(255, 255, 255, 0.34);
+}
+
+.admin-status-pill.inactive i {
+  background: rgba(255, 255, 255, 0.25);
+  box-shadow: none;
+}
+
+.admin-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.admin-reset-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: end;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(151, 238, 221, 0.1);
+  border-radius: 10px;
+  background: rgba(151, 238, 221, 0.025);
+}
+
+.admin-empty-state {
+  padding: 36px 18px;
+  color: rgba(255, 255, 255, 0.36);
+  text-align: center;
+  font-size: 11px;
+}
+
+@media (max-width: 980px) {
+  .admin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-create-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .admin-user-row {
+    grid-template-columns: minmax(160px, 1.3fr) minmax(120px, 0.8fr) 100px;
+  }
+
+  .admin-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 680px) {
+  .admin-workspace {
+    padding: 18px 12px 34px;
+  }
+
+  .admin-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-refresh {
+    align-self: flex-start;
+  }
+
+  .admin-create-form,
+  .admin-user-row,
+  .admin-reset-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-status-cell,
+  .admin-row-actions,
+  .admin-reset-panel {
+    grid-column: 1;
+  }
+
+  .admin-row-actions {
+    flex-wrap: wrap;
   }
 }
 
