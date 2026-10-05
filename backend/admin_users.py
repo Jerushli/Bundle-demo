@@ -206,6 +206,7 @@ def update_user_role(
                 UPDATE app.users
                 SET
                     role = %s,
+                    token_version = token_version + 1,
                     updated_at = now()
                 WHERE id = %s
                 RETURNING
@@ -306,6 +307,7 @@ def update_user_active_status(
                 UPDATE app.users
                 SET
                     is_active = %s,
+                    token_version = token_version + 1,
                     updated_at = now()
                 WHERE id = %s
                 RETURNING
@@ -358,6 +360,7 @@ def reset_user_password(
                 UPDATE app.users
                 SET
                     password_hash = %s,
+                    token_version = token_version + 1,
                     updated_at = now()
                 WHERE id = %s
                 RETURNING id

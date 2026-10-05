@@ -58,6 +58,7 @@ class AuthenticatedUser:
     username: str
     role: Role
     is_active: bool
+    token_version: int
 
 
 password_hasher = PasswordHasher()
@@ -96,7 +97,8 @@ def get_user_by_username(
                     id,
                     username,
                     role,
-                    is_active
+                    is_active,
+                    token_version
                 FROM app.users
                 WHERE lower(username) = %s
                 LIMIT 1
@@ -114,6 +116,7 @@ def get_user_by_username(
         username=str(row[1]),
         role=str(row[2]),  # type: ignore[arg-type]
         is_active=bool(row[3]),
+        token_version=int(row[4]),
     )
 
 
@@ -128,7 +131,8 @@ def get_user_by_id(
                     id,
                     username,
                     role,
-                    is_active
+                    is_active,
+                    token_version
                 FROM app.users
                 WHERE id = %s
                 LIMIT 1
@@ -146,6 +150,7 @@ def get_user_by_id(
         username=str(row[1]),
         role=str(row[2]),  # type: ignore[arg-type]
         is_active=bool(row[3]),
+        token_version=int(row[4]),
     )
 
 
@@ -166,7 +171,8 @@ def authenticate_user(
                     username,
                     password_hash,
                     role,
-                    is_active
+                    is_active,
+                    token_version
                 FROM app.users
                 WHERE lower(username) = %s
                 LIMIT 1
@@ -185,6 +191,7 @@ def authenticate_user(
                 password_hash,
                 role,
                 is_active,
+                token_version,
             ) = row
 
             if not is_active:
@@ -241,6 +248,7 @@ def authenticate_user(
         username=str(stored_username),
         role=str(role),  # type: ignore[arg-type]
         is_active=True,
+        token_version=int(token_version),
     )
 
 
@@ -255,6 +263,7 @@ def create_access_token(
         "sub": str(user.id),
         "username": user.username,
         "role": user.role,
+        "ver": user.token_version,
         "iat": now,
         "exp": (
             now
@@ -335,6 +344,20 @@ def verify_access_token(
             status_code=401,
             detail=(
                 "This account is unavailable."
+            ),
+        )
+
+    token_version = payload.get("ver")
+
+    if (
+        not isinstance(token_version, int)
+        or token_version != user.token_version
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "This session is no longer valid. "
+                "Please log in again."
             ),
         )
 
