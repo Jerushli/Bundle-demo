@@ -49,6 +49,17 @@
   let loginError = $state('');
   let loggingIn = $state(false);
 
+  type UserRole = 'admin' | 'analyst' | 'viewer';
+
+  type CurrentUser = {
+    id?: number;
+    username: string;
+    role: UserRole;
+  };
+
+  let currentUser = $state<CurrentUser | null>(null);
+  let authProfileLoading = $state(false);
+
   const AUTH_TOKEN_KEY = 'bundle-data-assistant-token';
 
   // ------------------------------------------
@@ -205,6 +216,63 @@
 
 
 
+  function isUserRole(value: unknown): value is UserRole {
+    return value === 'admin' || value === 'analyst' || value === 'viewer';
+  }
+
+  function canUseChat(): boolean {
+    return currentUser?.role === 'admin' || currentUser?.role === 'analyst';
+  }
+
+  function roleLabel(): string {
+    if (!currentUser) {
+      return authProfileLoading ? 'VERIFYING' : 'SIGNED IN';
+    }
+
+    return currentUser.role.toUpperCase();
+  }
+
+  function userInitial(): string {
+    return currentUser?.username?.trim().charAt(0).toUpperCase() || 'B';
+  }
+
+  async function restoreSession(token: string) {
+    authProfileLoading = true;
+
+    try {
+      const response = await fetch('/api/me', {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Session unavailable.');
+      }
+
+      const data = await response.json();
+
+      if (
+        typeof data.username !== 'string' ||
+        !isUserRole(data.role)
+      ) {
+        throw new Error('Invalid account profile.');
+      }
+
+      currentUser = {
+        id: typeof data.id === 'number' ? data.id : undefined,
+        username: data.username,
+        role: data.role
+      };
+    } catch {
+      authToken = null;
+      currentUser = null;
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    } finally {
+      authProfileLoading = false;
+    }
+  }
+
   async function login() {
   loginError = '';
   loggingIn = true;
@@ -237,7 +305,21 @@
       );
     }
 
+    if (
+      typeof data.username !== 'string' ||
+      !isUserRole(data.role)
+    ) {
+      throw new Error(
+        'Login response did not include a valid user profile.'
+      );
+    }
+
     authToken = data.access_token;
+
+    currentUser = {
+      username: data.username,
+      role: data.role
+    };
 
     localStorage.setItem(
       AUTH_TOKEN_KEY,
@@ -263,6 +345,8 @@ function handleLoginSubmit(event: SubmitEvent) {
 
 function logout() {
   authToken = null;
+  currentUser = null;
+  authProfileLoading = false;
 
   localStorage.removeItem(
     AUTH_TOKEN_KEY
@@ -991,7 +1075,8 @@ function getChartOptions(message: Message) {
      localStorage.getItem(AUTH_TOKEN_KEY);
 
     if (storedToken) {
-    authToken = storedToken;
+      authToken = storedToken;
+      void restoreSession(storedToken);
     }
 
     try {
@@ -1200,6 +1285,13 @@ function getChartOptions(message: Message) {
   const question = input.trim();
 
   if (!question || sending) {
+    return;
+  }
+
+  if (!canUseChat()) {
+    error = currentUser?.role === 'viewer'
+      ? 'Viewer accounts have read-only workspace access. AI chat is available to Analysts and Admins.'
+      : 'Your account permissions are still being verified.';
     return;
   }
 
@@ -1828,9 +1920,20 @@ function getChartOptions(message: Message) {
 
     <div class="sidebar-footer">
 
+  <div class="account-summary">
+    <div class="account-avatar">{userInitial()}</div>
+    <div class="account-details">
+      <strong>{currentUser?.username ?? 'Verifying account'}</strong>
+      <span>{roleLabel()} ACCESS</span>
+    </div>
+    <span class:viewer-role={currentUser?.role === 'viewer'} class="role-chip">
+      {roleLabel()}
+    </span>
+  </div>
+
   <div class="sidebar-status">
     <div class="status-dot"></div>
-    <span>INTELLIGENCE WORKSPACE</span>
+    <span>{currentUser?.role === 'viewer' ? 'READ-ONLY WORKSPACE' : 'INTELLIGENCE WORKSPACE'}</span>
   </div>
 
   <button
@@ -1893,7 +1996,7 @@ function getChartOptions(message: Message) {
 
 
 
-      <div class="topbar-tools"><button type="button" class="transcript-action" onclick={downloadTranscript} title="Download this conversation as a text file" disabled={getMessages().length === 0}>↓ Export chat</button><span class="topbar-version">BUNDLE / ENTERPRISE</span><div class="topbar-badge"><span class="badge-led"></span> AI WORKSPACE</div><div class="topbar-initial" title="Signed in">B</div></div>
+      <div class="topbar-tools"><button type="button" class="transcript-action" onclick={downloadTranscript} title="Download this conversation as a text file" disabled={getMessages().length === 0}>↓ Export chat</button><span class="topbar-version">BUNDLE / ENTERPRISE</span><div class:viewer-badge={currentUser?.role === 'viewer'} class="topbar-badge"><span class="badge-led"></span> {currentUser?.role === 'viewer' ? 'READ ONLY' : roleLabel()}</div><div class="topbar-initial" title={currentUser ? `${currentUser.username} · ${roleLabel()}` : 'Signed in'}>{userInitial()}</div></div>
 
 
 
@@ -2422,7 +2525,15 @@ function getChartOptions(message: Message) {
 
     <div class="input-section">
 
-
+      {#if currentUser?.role === 'viewer'}
+        <div class="viewer-notice" role="status">
+          <span class="viewer-notice-icon">◇</span>
+          <div>
+            <strong>Read-only access</strong>
+            <span>You can review existing conversations and exported results. AI questions require Analyst or Admin access.</span>
+          </div>
+        </div>
+      {/if}
 
       <form
 
@@ -2440,13 +2551,17 @@ function getChartOptions(message: Message) {
 
           onkeydown={handleKeydown}
 
-          placeholder="Ask Bundle anything about your company data..."
+          placeholder={currentUser?.role === 'viewer'
+            ? 'Viewer access is read-only'
+            : authProfileLoading
+              ? 'Verifying workspace permissions...'
+              : 'Ask Bundle anything about your company data...'}
 
           aria-label="Your message"
 
           rows="1"
 
-          disabled={sending}
+          disabled={sending || !canUseChat()}
 
         ></textarea>
 
@@ -2460,7 +2575,7 @@ function getChartOptions(message: Message) {
 
           type="submit"
 
-          disabled={sending || !input.trim()}
+          disabled={sending || !input.trim() || !canUseChat()}
 
           aria-label="Send message"
 
@@ -2489,7 +2604,9 @@ function getChartOptions(message: Message) {
 
 
 
-        BUNDLE INTELLIGENCE · Answers are generated from the connected data. Verify consequential decisions against source records.
+        {currentUser?.role === 'viewer'
+          ? 'BUNDLE VIEWER · Read-only workspace access.'
+          : 'BUNDLE INTELLIGENCE · Answers are generated from the connected data. Verify consequential decisions against source records.'}
 
 
 
@@ -4642,6 +4759,143 @@ function getChartOptions(message: Message) {
   .suggestion,
   .input-box,
   .login-panel input { transition: none; }
+}
+
+
+
+/* =========================================================
+   RBAC / ROLE-AWARE WORKSPACE
+   Additive only: existing Noir layout and interactions remain.
+   ========================================================= */
+
+.account-summary {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 10px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012));
+}
+
+.account-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.account-details {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.account-details strong {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-details span {
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.role-chip {
+  padding: 5px 7px;
+  border: 1px solid rgba(123, 231, 211, 0.22);
+  border-radius: 999px;
+  background: rgba(123, 231, 211, 0.06);
+  color: rgba(173, 244, 231, 0.8);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.role-chip.viewer-role,
+.topbar-badge.viewer-badge {
+  border-color: rgba(255, 255, 255, 0.11);
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.viewer-notice {
+  width: min(900px, calc(100% - 32px));
+  margin: 0 auto 10px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 13px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012));
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.viewer-notice-icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.viewer-notice > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viewer-notice strong {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.viewer-notice span:not(.viewer-notice-icon) {
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.input-box textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.suggestion:disabled {
+  cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  .account-summary {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+
+  .viewer-notice {
+    width: calc(100% - 20px);
+  }
 }
 
 </style>
