@@ -60,7 +60,7 @@
   let currentUser = $state<CurrentUser | null>(null);
   let authProfileLoading = $state(false);
 
-  type WorkspaceView = 'chat' | 'admin';
+  type WorkspaceView = 'chat' | 'admin' | 'audit';
 
   type ManagedUser = {
     id: number;
@@ -85,6 +85,23 @@
 
   let resetPasswordUserId = $state<number | null>(null);
   let resetPasswordValue = $state('');
+
+  type AuditLogItem = {
+    username: string;
+    question: string;
+    tool_name: string | null;
+    status: string;
+    execution_time_ms: number | null;
+    error_message: string | null;
+    created_at: string;
+  };
+
+  let auditLogs = $state<AuditLogItem[]>([]);
+  let auditLoading = $state(false);
+  let auditError = $state('');
+  let auditUsernameFilter = $state('');
+  let auditStatusFilter = $state('');
+  let auditToolFilter = $state('');
 
   const AUTH_TOKEN_KEY = 'bundle-data-assistant-token';
 
@@ -375,6 +392,8 @@ function logout() {
   authProfileLoading = false;
   workspaceView = 'chat';
   managedUsers = [];
+  auditLogs = [];
+  auditError = '';
   adminError = '';
   adminNotice = '';
 
@@ -1692,6 +1711,97 @@ function getChartOptions(message: Message) {
     }
   }
 
+  async function loadAuditLogs() {
+    if (currentUser?.role !== 'admin') {
+      return;
+    }
+
+    auditLoading = true;
+    auditError = '';
+
+    try {
+      const params = new URLSearchParams();
+
+      if (auditUsernameFilter.trim()) {
+        params.set('username', auditUsernameFilter.trim());
+      }
+
+      if (auditStatusFilter.trim()) {
+        params.set('status', auditStatusFilter.trim());
+      }
+
+      if (auditToolFilter.trim()) {
+        params.set('tool', auditToolFilter.trim());
+      }
+
+      params.set('limit', '100');
+
+      const data = await adminRequest(
+        `/api/admin/audit?${params.toString()}`
+      );
+
+      auditLogs = Array.isArray(data)
+        ? data.filter((item): item is AuditLogItem =>
+            item &&
+            typeof item.username === 'string' &&
+            typeof item.question === 'string' &&
+            typeof item.status === 'string' &&
+            typeof item.created_at === 'string'
+          )
+        : [];
+    } catch (cause) {
+      auditError =
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to load audit activity.';
+    } finally {
+      auditLoading = false;
+    }
+  }
+
+  function openAuditPanel() {
+    if (currentUser?.role !== 'admin') {
+      return;
+    }
+
+    workspaceView = 'audit';
+    auditError = '';
+    void loadAuditLogs();
+
+    if (sidebarOpen) {
+      sidebarOpen = false;
+    }
+  }
+
+  function clearAuditFilters() {
+    auditUsernameFilter = '';
+    auditStatusFilter = '';
+    auditToolFilter = '';
+    void loadAuditLogs();
+  }
+
+  function formatAuditTime(value: string): string {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+
+    return date.toLocaleString();
+  }
+
+  function auditStatusClass(status: string): string {
+    if (status === 'success') {
+      return 'success';
+    }
+
+    if (status === 'validation_error') {
+      return 'warning';
+    }
+
+    return 'error';
+  }
+
   function openChatWorkspace() {
     workspaceView = 'chat';
     adminError = '';
@@ -2177,6 +2287,15 @@ function getChartOptions(message: Message) {
             <span>⌘</span>
             User Management
           </button>
+
+          <button
+            type="button"
+            class:active={workspaceView === 'audit'}
+            onclick={openAuditPanel}
+          >
+            <span>≡</span>
+            Audit Logs
+          </button>
         {/if}
       </div>
 
@@ -2306,10 +2425,27 @@ function getChartOptions(message: Message) {
 
         <div class="topbar-title">
           <span class="topbar-path">
-            WORKSPACE <span>/</span> {workspaceView === 'admin' ? 'ADMINISTRATION' : 'AI ASSISTANT'}
+            WORKSPACE <span>/</span>
+            {workspaceView === 'admin'
+              ? 'ADMINISTRATION'
+              : workspaceView === 'audit'
+                ? 'AUDIT'
+                : 'AI ASSISTANT'}
           </span>
-          <strong>{workspaceView === 'admin' ? 'User Management' : 'AI Assistant'}</strong>
-          <small>{workspaceView === 'admin' ? 'Accounts · Roles · Access' : 'Ask · Analyze · Explore · Decide'}</small>
+          <strong>
+            {workspaceView === 'admin'
+              ? 'User Management'
+              : workspaceView === 'audit'
+                ? 'Audit Logs'
+                : 'AI Assistant'}
+          </strong>
+          <small>
+            {workspaceView === 'admin'
+              ? 'Accounts · Roles · Access'
+              : workspaceView === 'audit'
+                ? 'Activity · Tools · Outcomes'
+                : 'Ask · Analyze · Explore · Decide'}
+          </small>
         </div>
 
 
@@ -2938,7 +3074,7 @@ function getChartOptions(message: Message) {
 
     </div>
 
-    {:else if currentUser?.role === 'admin'}
+    {:else if workspaceView === 'admin' && currentUser?.role === 'admin'}
 
       <section class="admin-workspace">
         <div class="admin-hero">
@@ -3151,6 +3287,140 @@ function getChartOptions(message: Message) {
                   {/if}
                 </article>
               {/each}
+            </div>
+          {/if}
+        </section>
+      </section>
+
+    {:else if workspaceView === 'audit' && currentUser?.role === 'admin'}
+
+      <section class="audit-workspace">
+        <div class="admin-hero audit-hero">
+          <div>
+            <span class="admin-overline">BUNDLE SECURITY ACTIVITY</span>
+            <h1>Audit logs</h1>
+            <p>Review recent AI requests, tools used, execution outcomes, and response timing.</p>
+          </div>
+
+          <button
+            type="button"
+            class="admin-refresh"
+            onclick={() => void loadAuditLogs()}
+            disabled={auditLoading}
+          >
+            {auditLoading ? 'Refreshing…' : '↻ Refresh logs'}
+          </button>
+        </div>
+
+        <section class="admin-card audit-filter-card">
+          <form
+            class="audit-filter-grid"
+            onsubmit={(event) => {
+              event.preventDefault();
+              void loadAuditLogs();
+            }}
+          >
+            <label>
+              <span>Username</span>
+              <input
+                type="search"
+                bind:value={auditUsernameFilter}
+                placeholder="All users"
+              />
+            </label>
+
+            <label>
+              <span>Status</span>
+              <select bind:value={auditStatusFilter}>
+                <option value="">All statuses</option>
+                <option value="success">Success</option>
+                <option value="validation_error">Validation error</option>
+                <option value="error">Error</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Tool</span>
+              <input
+                type="search"
+                bind:value={auditToolFilter}
+                placeholder="e.g. get_monthly_trend"
+              />
+            </label>
+
+            <button
+              type="submit"
+              class="admin-primary-action"
+              disabled={auditLoading}
+            >
+              Apply filters
+            </button>
+
+            <button
+              type="button"
+              class="admin-refresh"
+              onclick={clearAuditFilters}
+              disabled={auditLoading}
+            >
+              Clear
+            </button>
+          </form>
+        </section>
+
+        {#if auditError}
+          <div class="admin-alert admin-alert-error" role="alert">{auditError}</div>
+        {/if}
+
+        <section class="admin-card audit-table-card">
+          <div class="admin-card-heading audit-table-heading">
+            <div>
+              <span>RECENT ACTIVITY</span>
+              <h2>Request history</h2>
+            </div>
+            <span class="admin-user-count">{auditLogs.length} RECORDS</span>
+          </div>
+
+          {#if auditLoading}
+            <div class="admin-empty-state">Loading audit activity…</div>
+          {:else if auditLogs.length === 0}
+            <div class="admin-empty-state">No audit records match the current filters.</div>
+          {:else}
+            <div class="audit-table-scroll">
+              <table class="audit-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>User</th>
+                    <th>Question</th>
+                    <th>Tool</th>
+                    <th>Status</th>
+                    <th>Time ms</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each auditLogs as log}
+                    <tr>
+                      <td class="audit-time">{formatAuditTime(log.created_at)}</td>
+                      <td><strong>{log.username}</strong></td>
+                      <td>
+                        <div class="audit-question" title={log.question}>
+                          {log.question}
+                        </div>
+                        {#if log.error_message}
+                          <div class="audit-error-detail">{log.error_message}</div>
+                        {/if}
+                      </td>
+                      <td><code>{log.tool_name ?? 'no_tool'}</code></td>
+                      <td>
+                        <span class={`audit-status ${auditStatusClass(log.status)}`}>
+                          {log.status.replaceAll('_', ' ')}
+                        </span>
+                      </td>
+                      <td>{log.execution_time_ms ?? '—'}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
             </div>
           {/if}
         </section>
@@ -5906,6 +6176,229 @@ function getChartOptions(message: Message) {
 
   .admin-row-actions {
     flex-wrap: wrap;
+  }
+}
+
+
+
+/* =========================================================
+   ADMIN AUDIT VISIBILITY
+   ========================================================= */
+
+.audit-workspace {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px clamp(18px, 3vw, 42px) 48px;
+  background:
+    radial-gradient(circle at 82% 0%, rgba(110, 232, 208, 0.04), transparent 30%),
+    radial-gradient(circle at 8% 30%, rgba(255, 255, 255, 0.022), transparent 34%);
+}
+
+.audit-hero,
+.audit-filter-card,
+.audit-table-card {
+  max-width: 1180px;
+}
+
+.audit-filter-card {
+  margin: 0 auto 14px;
+  padding: 14px;
+}
+
+.audit-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 160px minmax(190px, 1fr) auto auto;
+  align-items: end;
+  gap: 9px;
+}
+
+.audit-filter-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.audit-filter-grid label > span {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.audit-filter-grid input,
+.audit-filter-grid select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 9px;
+  outline: none;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.86);
+  padding: 0 11px;
+  font-size: 11px;
+}
+
+.audit-filter-grid input:focus,
+.audit-filter-grid select:focus {
+  border-color: rgba(151, 238, 221, 0.3);
+  box-shadow: 0 0 0 3px rgba(151, 238, 221, 0.04);
+}
+
+.audit-filter-grid option {
+  background: #0c0e0f;
+  color: #f4f4f4;
+}
+
+.audit-table-card {
+  margin: 0 auto;
+  overflow: hidden;
+}
+
+.audit-table-heading {
+  margin: 0;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.audit-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.audit-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.audit-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.32);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-align: left;
+}
+
+.audit-table td {
+  padding: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 10px;
+  vertical-align: top;
+}
+
+.audit-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.audit-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.audit-table th:nth-child(1),
+.audit-table td:nth-child(1) {
+  width: 160px;
+}
+
+.audit-table th:nth-child(2),
+.audit-table td:nth-child(2) {
+  width: 110px;
+}
+
+.audit-table th:nth-child(4),
+.audit-table td:nth-child(4) {
+  width: 165px;
+}
+
+.audit-table th:nth-child(5),
+.audit-table td:nth-child(5) {
+  width: 130px;
+}
+
+.audit-table th:nth-child(6),
+.audit-table td:nth-child(6) {
+  width: 80px;
+}
+
+.audit-table strong {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.audit-table code {
+  color: rgba(168, 239, 225, 0.72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+  word-break: break-word;
+}
+
+.audit-time {
+  color: rgba(255, 255, 255, 0.38) !important;
+  white-space: nowrap;
+}
+
+.audit-question {
+  display: -webkit-box;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.72);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  line-height: 1.45;
+}
+
+.audit-error-detail {
+  margin-top: 5px;
+  color: rgba(255, 150, 150, 0.62);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.audit-status {
+  display: inline-flex;
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.audit-status.success {
+  border-color: rgba(123, 231, 211, 0.16);
+  background: rgba(123, 231, 211, 0.045);
+  color: rgba(167, 239, 225, 0.75);
+}
+
+.audit-status.warning {
+  border-color: rgba(244, 205, 112, 0.16);
+  background: rgba(244, 205, 112, 0.04);
+  color: rgba(244, 213, 145, 0.72);
+}
+
+.audit-status.error {
+  border-color: rgba(255, 120, 120, 0.16);
+  background: rgba(255, 90, 90, 0.04);
+  color: rgba(255, 160, 160, 0.75);
+}
+
+@media (max-width: 860px) {
+  .audit-filter-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .audit-workspace {
+    padding: 18px 12px 34px;
+  }
+
+  .audit-filter-grid {
+    grid-template-columns: 1fr;
   }
 }
 

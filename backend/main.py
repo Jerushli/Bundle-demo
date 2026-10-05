@@ -9,6 +9,7 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Query,
     Request,
 )
 
@@ -27,7 +28,10 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from backend.ai import process_chat
-from backend.audit import write_audit_log
+from backend.audit import (
+    list_audit_logs,
+    write_audit_log,
+)
 
 from backend.auth import (
     AuthenticatedUser,
@@ -277,6 +281,23 @@ class OperationMessageResponse(BaseModel):
     message: str
 
 
+class AuditLogResponse(BaseModel):
+
+    username: str
+
+    question: str
+
+    tool_name: str | None = None
+
+    status: str
+
+    execution_time_ms: int | None = None
+
+    error_message: str | None = None
+
+    created_at: datetime
+
+
 # ==================================================
 # AUDIT LOGGING
 # ==================================================
@@ -504,6 +525,47 @@ def admin_reset_user_password(
 
     return OperationMessageResponse(
         message="Password reset successfully."
+    )
+
+
+
+# ==================================================
+# ADMIN AUDIT API
+# ==================================================
+
+@app.get(
+    "/api/admin/audit",
+    response_model=list[AuditLogResponse],
+)
+def admin_list_audit_logs(
+    username: str | None = Query(
+        default=None,
+        max_length=100,
+    ),
+    status: str | None = Query(
+        default=None,
+        max_length=50,
+    ),
+    tool: str | None = Query(
+        default=None,
+        max_length=100,
+    ),
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=200,
+    ),
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+
+    return list_audit_logs(
+        username=username,
+        status=status,
+        tool_name=tool,
+        limit=limit,
     )
 
 
