@@ -2,6 +2,7 @@ import logging
 
 from pathlib import Path
 from time import perf_counter
+from datetime import datetime
 from typing import Literal
 
 from fastapi import (
@@ -30,10 +31,20 @@ from backend.audit import write_audit_log
 
 from backend.auth import (
     AuthenticatedUser,
+    Role,
     authenticate_user,
     create_access_token,
     require_roles,
     verify_access_token,
+)
+
+from backend.admin_users import (
+    UserManagementError,
+    create_user,
+    list_users,
+    reset_user_password,
+    update_user_active_status,
+    update_user_role,
 )
 
 
@@ -98,6 +109,7 @@ app.add_middleware(
     allow_methods=[
         "GET",
         "POST",
+        "PATCH",
         "OPTIONS",
     ],
 
@@ -197,6 +209,74 @@ class ChatRequest(BaseModel):
     context: AnalysisContext | None = None
 
 
+
+class ManagedUserResponse(BaseModel):
+
+    id: int
+
+    username: str
+
+    role: Literal[
+        "admin",
+        "analyst",
+        "viewer",
+    ]
+
+    is_active: bool
+
+    created_at: datetime
+
+    updated_at: datetime
+
+    last_login_at: datetime | None = None
+
+
+class CreateUserRequest(BaseModel):
+
+    username: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    password: str = Field(
+        min_length=10,
+        max_length=200,
+    )
+
+    role: Literal[
+        "admin",
+        "analyst",
+        "viewer",
+    ]
+
+
+class UpdateUserRoleRequest(BaseModel):
+
+    role: Literal[
+        "admin",
+        "analyst",
+        "viewer",
+    ]
+
+
+class UpdateUserStatusRequest(BaseModel):
+
+    is_active: bool
+
+
+class ResetUserPasswordRequest(BaseModel):
+
+    new_password: str = Field(
+        min_length=10,
+        max_length=200,
+    )
+
+
+class OperationMessageResponse(BaseModel):
+
+    message: str
+
+
 # ==================================================
 # AUDIT LOGGING
 # ==================================================
@@ -286,6 +366,144 @@ def me(
         id=current_user.id,
         username=current_user.username,
         role=current_user.role,
+    )
+
+
+
+# ==================================================
+# ADMIN USER MANAGEMENT API
+# ==================================================
+
+@app.get(
+    "/api/admin/users",
+    response_model=list[ManagedUserResponse],
+)
+def admin_list_users(
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+
+    return list_users()
+
+
+@app.post(
+    "/api/admin/users",
+    response_model=ManagedUserResponse,
+    status_code=201,
+)
+def admin_create_user(
+    body: CreateUserRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+
+    try:
+
+        return create_user(
+            username=body.username,
+            password=body.password,
+            role=body.role,
+        )
+
+    except UserManagementError as exc:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@app.patch(
+    "/api/admin/users/{user_id}/role",
+    response_model=ManagedUserResponse,
+)
+def admin_update_user_role(
+    user_id: int,
+    body: UpdateUserRoleRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+
+    try:
+
+        return update_user_role(
+            target_user_id=user_id,
+            new_role=body.role,
+            acting_user=current_user,
+        )
+
+    except UserManagementError as exc:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@app.patch(
+    "/api/admin/users/{user_id}/status",
+    response_model=ManagedUserResponse,
+)
+def admin_update_user_status(
+    user_id: int,
+    body: UpdateUserStatusRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+
+    try:
+
+        return update_user_active_status(
+            target_user_id=user_id,
+            is_active=body.is_active,
+            acting_user=current_user,
+        )
+
+    except UserManagementError as exc:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post(
+    "/api/admin/users/{user_id}/reset-password",
+    response_model=OperationMessageResponse,
+)
+def admin_reset_user_password(
+    user_id: int,
+    body: ResetUserPasswordRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+
+    try:
+
+        reset_user_password(
+            target_user_id=user_id,
+            new_password=body.new_password,
+        )
+
+    except UserManagementError as exc:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return OperationMessageResponse(
+        message="Password reset successfully."
     )
 
 
