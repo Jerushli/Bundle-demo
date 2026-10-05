@@ -29,8 +29,10 @@ from backend.ai import process_chat
 from backend.audit import write_audit_log
 
 from backend.auth import (
+    AuthenticatedUser,
     authenticate_user,
     create_access_token,
+    require_roles,
     verify_access_token,
 )
 
@@ -129,6 +131,27 @@ class LoginResponse(BaseModel):
 
     token_type: str = "bearer"
 
+    username: str
+
+    role: Literal[
+        "admin",
+        "analyst",
+        "viewer",
+    ]
+
+
+class CurrentUserResponse(BaseModel):
+
+    id: int
+
+    username: str
+
+    role: Literal[
+        "admin",
+        "analyst",
+        "viewer",
+    ]
+
 
 class ChatHistoryItem(BaseModel):
 
@@ -219,10 +242,12 @@ def login(
     body: LoginRequest,
 ):
 
-    if not authenticate_user(
+    user = authenticate_user(
         body.username,
         body.password,
-    ):
+    )
+
+    if user is None:
 
         raise HTTPException(
             status_code=401,
@@ -232,11 +257,35 @@ def login(
         )
 
     token = create_access_token(
-        body.username
+        user
     )
 
     return LoginResponse(
-        access_token=token
+        access_token=token,
+        username=user.username,
+        role=user.role,
+    )
+
+
+# ==================================================
+# CURRENT USER API
+# ==================================================
+
+@app.get(
+    "/api/me",
+    response_model=CurrentUserResponse,
+)
+def me(
+    current_user:
+    AuthenticatedUser = Depends(
+        verify_access_token
+    ),
+):
+
+    return CurrentUserResponse(
+        id=current_user.id,
+        username=current_user.username,
+        role=current_user.role,
     )
 
 
@@ -249,8 +298,12 @@ def login(
 def chat(
     request: Request,
     body: ChatRequest,
-    current_user: str = Depends(
-        verify_access_token
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
     ),
 ):
 
@@ -288,7 +341,7 @@ def chat(
         )
 
         safe_write_audit_log(
-            username=current_user,
+            username=current_user.username,
             question=body.message,
             tool_name=tool_name,
             status="success",
@@ -310,7 +363,7 @@ def chat(
         )
 
         safe_write_audit_log(
-            username=current_user,
+            username=current_user.username,
             question=body.message,
             tool_name=None,
             status="validation_error",
@@ -338,7 +391,7 @@ def chat(
         )
 
         safe_write_audit_log(
-            username=current_user,
+            username=current_user.username,
             question=body.message,
             tool_name=None,
             status="error",

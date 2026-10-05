@@ -1,14 +1,28 @@
 import os
-import hmac
-
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable, Literal
 
 import jwt
 
+from argon2 import PasswordHasher
+from argon2.exceptions import (
+    InvalidHashError,
+    VerificationError,
+    VerifyMismatchError,
+)
+
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+)
+
+from backend.auth_database import (
+    get_auth_database_connection,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -20,20 +34,7 @@ load_dotenv(
 )
 
 
-APP_USERNAME = os.getenv("APP_USERNAME")
-APP_PASSWORD = os.getenv("APP_PASSWORD")
 JWT_SECRET = os.getenv("JWT_SECRET")
-
-
-if not APP_USERNAME:
-    raise RuntimeError(
-        "APP_USERNAME is missing"
-    )
-
-if not APP_PASSWORD:
-    raise RuntimeError(
-        "APP_PASSWORD is missing"
-    )
 
 if not JWT_SECRET:
     raise RuntimeError(
@@ -42,49 +43,219 @@ if not JWT_SECRET:
 
 
 JWT_ALGORITHM = "HS256"
-
 JWT_EXPIRE_HOURS = 8
 
+Role = Literal[
+    "admin",
+    "analyst",
+    "viewer",
+]
+
+
+@dataclass(frozen=True)
+class AuthenticatedUser:
+    id: int
+    username: str
+    role: Role
+    is_active: bool
+
+
+password_hasher = PasswordHasher()
 
 security = HTTPBearer(
     auto_error=False
 )
 
 
+def normalize_username(
+    username: str,
+) -> str:
+    return username.strip().lower()
+
+
+def hash_password(
+    password: str,
+) -> str:
+    return password_hasher.hash(
+        password
+    )
+
+
+def get_user_by_username(
+    username: str,
+) -> AuthenticatedUser | None:
+    normalized = normalize_username(
+        username
+    )
+
+    with get_auth_database_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    username,
+                    role,
+                    is_active
+                FROM app.users
+                WHERE lower(username) = %s
+                LIMIT 1
+                """,
+                (normalized,),
+            )
+
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return AuthenticatedUser(
+        id=int(row[0]),
+        username=str(row[1]),
+        role=str(row[2]),  # type: ignore[arg-type]
+        is_active=bool(row[3]),
+    )
+
+
+def get_user_by_id(
+    user_id: int,
+) -> AuthenticatedUser | None:
+    with get_auth_database_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    username,
+                    role,
+                    is_active
+                FROM app.users
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return AuthenticatedUser(
+        id=int(row[0]),
+        username=str(row[1]),
+        role=str(row[2]),  # type: ignore[arg-type]
+        is_active=bool(row[3]),
+    )
+
+
 def authenticate_user(
     username: str,
     password: str,
-) -> bool:
-
-    username_valid = hmac.compare_digest(
-        username,
-        APP_USERNAME,
+) -> AuthenticatedUser | None:
+    normalized = normalize_username(
+        username
     )
 
-    password_valid = hmac.compare_digest(
-        password,
-        APP_PASSWORD,
-    )
+    with get_auth_database_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    username,
+                    password_hash,
+                    role,
+                    is_active
+                FROM app.users
+                WHERE lower(username) = %s
+                LIMIT 1
+                """,
+                (normalized,),
+            )
 
-    return (
-        username_valid
-        and password_valid
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            (
+                user_id,
+                stored_username,
+                password_hash,
+                role,
+                is_active,
+            ) = row
+
+            if not is_active:
+                return None
+
+            try:
+                password_hasher.verify(
+                    str(password_hash),
+                    password,
+                )
+            except (
+                VerifyMismatchError,
+                VerificationError,
+                InvalidHashError,
+            ):
+                return None
+
+            if password_hasher.check_needs_rehash(
+                str(password_hash)
+            ):
+                new_hash = hash_password(
+                    password
+                )
+
+                cur.execute(
+                    """
+                    UPDATE app.users
+                    SET
+                        password_hash = %s,
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (
+                        new_hash,
+                        user_id,
+                    ),
+                )
+
+            cur.execute(
+                """
+                UPDATE app.users
+                SET
+                    last_login_at = now(),
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+
+            conn.commit()
+
+    return AuthenticatedUser(
+        id=int(user_id),
+        username=str(stored_username),
+        role=str(role),  # type: ignore[arg-type]
+        is_active=True,
     )
 
 
 def create_access_token(
-    username: str,
+    user: AuthenticatedUser,
 ) -> str:
-
     now = datetime.now(
         timezone.utc
     )
 
     payload = {
-        "sub": username,
-
+        "sub": str(user.id),
+        "username": user.username,
+        "role": user.role,
         "iat": now,
-
         "exp": (
             now
             + timedelta(
@@ -104,21 +275,16 @@ def verify_access_token(
     credentials:
     HTTPAuthorizationCredentials
     | None = Depends(security),
-) -> str:
-
+) -> AuthenticatedUser:
     if credentials is None:
-
         raise HTTPException(
             status_code=401,
-            detail=(
-                "Authentication required."
-            ),
+            detail="Authentication required.",
         )
 
     token = credentials.credentials
 
     try:
-
         payload = jwt.decode(
             token,
             JWT_SECRET,
@@ -126,35 +292,79 @@ def verify_access_token(
                 JWT_ALGORITHM
             ],
         )
-
-    except jwt.ExpiredSignatureError:
-
+    except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=401,
             detail=(
                 "Session expired. "
                 "Please log in again."
             ),
-        )
-
-    except jwt.InvalidTokenError:
-
+        ) from exc
+    except jwt.InvalidTokenError as exc:
         raise HTTPException(
             status_code=401,
             detail=(
                 "Invalid authentication token."
             ),
-        )
+        ) from exc
 
-    username = payload.get("sub")
+    subject = payload.get("sub")
 
-    if not username:
-
+    try:
+        user_id = int(subject)
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
         raise HTTPException(
             status_code=401,
             detail=(
                 "Invalid authentication token."
             ),
+        ) from exc
+
+    user = get_user_by_id(
+        user_id
+    )
+
+    if (
+        user is None
+        or not user.is_active
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "This account is unavailable."
+            ),
         )
 
-    return str(username)
+    return user
+
+
+def require_roles(
+    *allowed_roles: Role,
+) -> Callable[
+    [AuthenticatedUser],
+    AuthenticatedUser,
+]:
+    def dependency(
+        current_user:
+        AuthenticatedUser = Depends(
+            verify_access_token
+        ),
+    ) -> AuthenticatedUser:
+        if (
+            current_user.role
+            not in allowed_roles
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Your role does not have "
+                    "permission for this action."
+                ),
+            )
+
+        return current_user
+
+    return dependency
