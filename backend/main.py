@@ -31,6 +31,7 @@ from backend.ai import process_chat
 from backend.dataset_ai import process_dataset_chat
 from backend.dataset_profiles import get_active_dataset_name
 from backend.rag_chat import process_rag_chat
+from backend.hybrid_chat import process_hybrid_chat, should_use_hybrid
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -668,23 +669,37 @@ def chat(
             # This call also validates that an active dataset exists.
             get_active_dataset_name()
 
-            result = process_dataset_chat(
-                body.message,
-                history=chat_history,
-                context=chat_context,
-                answer_mode=body.answer_mode,
-                role=current_user.role,
-            )
+            dataset_name = get_active_dataset_name()
 
-            if result.get(
-                "source"
-            ) == "rag_required":
-                result = process_rag_chat(
+            if should_use_hybrid(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_hybrid_chat(
                     question=body.message,
                     role=current_user.role,
-                    dataset_name=get_active_dataset_name(),
+                    dataset_name=dataset_name,
                     answer_mode=body.answer_mode,
                 )
+
+            else:
+                result = process_dataset_chat(
+                    body.message,
+                    history=chat_history,
+                    context=chat_context,
+                    answer_mode=body.answer_mode,
+                    role=current_user.role,
+                )
+
+                if result.get(
+                    "source"
+                ) == "rag_required":
+                    result = process_rag_chat(
+                        question=body.message,
+                        role=current_user.role,
+                        dataset_name=dataset_name,
+                        answer_mode=body.answer_mode,
+                    )
 
         execution_time_ms = int(
             (

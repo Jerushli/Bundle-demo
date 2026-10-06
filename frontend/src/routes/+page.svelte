@@ -185,7 +185,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid';
 
     metric?: string;
 
@@ -237,7 +237,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid';
 
     metric?: string;
 
@@ -1467,15 +1467,16 @@ function getChartOptions(message: Message) {
 
         return {
           ...conversation,
-          messages: conversation.messages.map(
-            (message) =>
-              message.id === messageId
-                ? {
-                    ...message,
-                    ...patch
-                  }
-                : message
-          )
+          messages:
+            conversation.messages.map(
+              (message) =>
+                message.id === messageId
+                  ? {
+                      ...message,
+                      ...patch
+                    }
+                  : message
+            )
         };
       }
     );
@@ -3134,7 +3135,7 @@ function getChartOptions(message: Message) {
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
 
-                    {#if (message.source === 'active_dataset' || message.source === 'rag') && message.question}
+                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid') && message.question}
                       <button
                         type="button"
                         class="explain-more-button"
@@ -3168,7 +3169,9 @@ function getChartOptions(message: Message) {
                       <div class="deep-analysis-footnote">
                         {message.source === 'rag'
                           ? 'Based only on authorized retrieved document evidence.'
-                          : 'Based only on structured evidence returned by the active dataset.'}
+                          : message.source === 'hybrid'
+                            ? 'Based on permitted structured metrics plus authorized document evidence.'
+                            : 'Based only on structured evidence returned by the active dataset.'}
                       </div>
                     </section>
                   {/if}
