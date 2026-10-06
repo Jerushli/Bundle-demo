@@ -28,6 +28,8 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from backend.ai import process_chat
+from backend.dataset_ai import process_dataset_chat
+from backend.dataset_profiles import get_active_dataset_name
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -49,6 +51,11 @@ from backend.admin_users import (
     reset_user_password,
     update_user_active_status,
     update_user_role,
+)
+
+
+from backend.dataset_profiles import (
+    get_latest_business_profile,
 )
 
 
@@ -211,6 +218,11 @@ class ChatRequest(BaseModel):
     )
 
     context: AnalysisContext | None = None
+
+    answer_mode: Literal[
+        "summary",
+        "detailed",
+    ] = "summary"
 
 
 
@@ -570,6 +582,35 @@ def admin_list_audit_logs(
 
 
 # ==================================================
+# ACTIVE DATASET PROFILE API
+# ==================================================
+
+@app.get("/api/datasets/active/profile")
+def active_dataset_profile(
+    current_user:
+    AuthenticatedUser = Depends(
+        verify_access_token
+    ),
+):
+    """
+    Return the latest deterministic Stage 5 business
+    profile for the configured active dataset.
+
+    Viewer accounts may read this endpoint because it
+    exposes precomputed read-only analytics only.
+    """
+
+    try:
+        return get_latest_business_profile()
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
+
+# ==================================================
 # CHAT API
 # ==================================================
 
@@ -591,20 +632,48 @@ def chat(
 
     try:
 
-        result = process_chat(
-            body.message,
+        chat_history = [
+            item.model_dump()
+            for item in body.history
+        ]
 
-            history=[
-                item.model_dump()
-                for item in body.history
-            ],
-
-            context=(
-                body.context.model_dump()
-                if body.context
-                else None
-            ),
+        chat_context = (
+            body.context.model_dump()
+            if body.context
+            else None
         )
+
+        # Bundle v2 structured analytics path.
+        #
+        # If BUNDLE_ACTIVE_DATASET is configured, questions are routed
+        # through the validated dataset-aware analytics layer.
+        #
+        # Set BUNDLE_CHAT_MODE=legacy only when you intentionally want
+        # to use the original fixed financial toolset.
+        import os
+
+        chat_mode = os.getenv(
+            "BUNDLE_CHAT_MODE",
+            "dataset",
+        ).strip().lower()
+
+        if chat_mode == "legacy":
+            result = process_chat(
+                body.message,
+                history=chat_history,
+                context=chat_context,
+            )
+        else:
+            # This call also validates that an active dataset exists.
+            get_active_dataset_name()
+
+            result = process_dataset_chat(
+                body.message,
+                history=chat_history,
+                context=chat_context,
+                answer_mode=body.answer_mode,
+                role=current_user.role,
+            )
 
         execution_time_ms = int(
             (
@@ -657,6 +726,34 @@ def chat(
 
         raise HTTPException(
             status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except PermissionError as exc:
+
+        execution_time_ms = int(
+            (
+                perf_counter()
+                - started_at
+            )
+            * 1000
+        )
+
+        safe_write_audit_log(
+            username=current_user.username,
+            question=body.message,
+            tool_name="dataset_security",
+            status="forbidden",
+            execution_time_ms=(
+                execution_time_ms
+            ),
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=403,
             detail=str(exc),
         ) from exc
 
