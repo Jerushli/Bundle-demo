@@ -60,6 +60,52 @@
   let currentUser = $state<CurrentUser | null>(null);
   let authProfileLoading = $state(false);
 
+
+  type BusinessMeasure = {
+    column_name: string;
+    total: number | null;
+    average: number | null;
+    minimum: number | null;
+    maximum: number | null;
+    non_null_rows: number;
+  };
+
+  type BusinessCategoryValue = {
+    name: string;
+    total: number | null;
+    row_count: number;
+  };
+
+  type BusinessCategoryBreakdown = {
+    category_column: string;
+    measure_column: string;
+    values: BusinessCategoryValue[];
+  };
+
+  type BusinessProfile = {
+    dataset_name: string;
+    analytics_table: string;
+    total_rows: number;
+    date_ranges: Record<
+      string,
+      {
+        minimum: string | null;
+        maximum: string | null;
+      }
+    >;
+    measures: BusinessMeasure[];
+    category_breakdowns: BusinessCategoryBreakdown[];
+    primary_measure: string | null;
+    quick_summary: string;
+    suggested_questions: string[];
+    generated_at: string;
+  };
+
+  let businessProfile = $state<BusinessProfile | null>(null);
+  let businessProfileLoading = $state(false);
+  let businessProfileError = $state('');
+  let businessProfileExpanded = $state(false);
+
   type WorkspaceView = 'chat' | 'admin' | 'audit';
 
   type ManagedUser = {
@@ -129,9 +175,19 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required';
 
     metric?: string;
+
+    question?: string;
+
+    deepAnswer?: string;
+
+    deepEvidence?: Record<string, unknown>;
+
+    deepLoading?: boolean;
+
+    deepError?: string;
 
   };
 
@@ -169,9 +225,13 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required';
 
     metric?: string;
+
+    answer_mode?: 'summary' | 'detailed';
+
+    evidence?: Record<string, unknown>;
 
     year?: number | null;
     country?: string | null;
@@ -279,6 +339,119 @@
     return currentUser?.username?.trim().charAt(0).toUpperCase() || 'B';
   }
 
+
+  function formatProfileNumber(value: number | null): string {
+    if (value === null || !Number.isFinite(value)) {
+      return '—';
+    }
+
+    const absolute = Math.abs(value);
+
+    if (absolute >= 1_000_000_000) {
+      return `${(value / 1_000_000_000).toFixed(2)}B`;
+    }
+
+    if (absolute >= 1_000_000) {
+      return `${(value / 1_000_000).toFixed(2)}M`;
+    }
+
+    if (absolute >= 1_000) {
+      return `${(value / 1_000).toFixed(2)}K`;
+    }
+
+    return new Intl.NumberFormat(undefined, {
+      maximumFractionDigits: 2
+    }).format(value);
+  }
+
+  function profileDateRange(): string {
+    if (!businessProfile) {
+      return 'No date range';
+    }
+
+    const firstRange =
+      Object.values(businessProfile.date_ranges ?? {})[0];
+
+    if (!firstRange?.minimum || !firstRange?.maximum) {
+      return 'Date range unavailable';
+    }
+
+    return `${firstRange.minimum} → ${firstRange.maximum}`;
+  }
+
+  async function loadBusinessProfile(
+    tokenOverride?: string
+  ) {
+    const token = tokenOverride ?? authToken;
+
+    if (!token) {
+      businessProfile = null;
+      businessProfileError = '';
+      return;
+    }
+
+    businessProfileLoading = true;
+    businessProfileError = '';
+
+    try {
+      const response = await fetch(
+        '/api/datasets/active/profile',
+        {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
+      );
+
+      if (response.status === 401) {
+        logout();
+        throw new Error(
+          'Your session has expired. Please log in again.'
+        );
+      }
+
+      if (!response.ok) {
+        let detail =
+          `Profile request failed with HTTP ${response.status}`;
+
+        try {
+          const failure = await response.json();
+
+          if (typeof failure.detail === 'string') {
+            detail = failure.detail;
+          }
+        } catch {
+          // Response may not contain JSON.
+        }
+
+        throw new Error(detail);
+      }
+
+      const data = await response.json();
+
+      if (
+        typeof data.dataset_name !== 'string' ||
+        typeof data.quick_summary !== 'string' ||
+        typeof data.total_rows !== 'number'
+      ) {
+        throw new Error(
+          'The backend returned an invalid dataset profile.'
+        );
+      }
+
+      businessProfile = data as BusinessProfile;
+    } catch (cause) {
+      businessProfile = null;
+
+      businessProfileError =
+        cause instanceof Error
+          ? cause.message
+          : 'Unable to load the active dataset profile.';
+    } finally {
+      businessProfileLoading = false;
+    }
+  }
+
   async function restoreSession(token: string) {
     authProfileLoading = true;
 
@@ -307,6 +480,8 @@
         username: data.username,
         role: data.role
       };
+
+      void loadBusinessProfile(token);
     } catch {
       authToken = null;
       currentUser = null;
@@ -364,6 +539,8 @@
       role: data.role
     };
 
+    void loadBusinessProfile(data.access_token);
+
     localStorage.setItem(
       AUTH_TOKEN_KEY,
       data.access_token
@@ -396,6 +573,10 @@ function logout() {
   auditError = '';
   adminError = '';
   adminNotice = '';
+  businessProfile = null;
+  businessProfileLoading = false;
+  businessProfileError = '';
+  businessProfileExpanded = false;
 
   localStorage.removeItem(
     AUTH_TOKEN_KEY
@@ -1256,6 +1437,39 @@ function getChartOptions(message: Message) {
 
 
 
+
+  function updateMessage(
+    conversationId: string,
+    messageId: string,
+    patch: Partial<Message>
+  ) {
+    conversations = conversations.map(
+      (conversation) => {
+        if (
+          conversation.id !== conversationId
+        ) {
+          return conversation;
+        }
+
+        return {
+          ...conversation,
+          messages:
+            conversation.messages.map(
+              (message) =>
+                message.id === messageId
+                  ? {
+                      ...message,
+                      ...patch
+                    }
+                  : message
+            )
+        };
+      }
+    );
+
+    saveConversations();
+  }
+
   function addMessage(
 
     conversationId: string,
@@ -1318,6 +1532,133 @@ function getChartOptions(message: Message) {
 
   }
 
+
+
+  async function requestDeepAnalysis(
+    message: Message
+  ) {
+    if (
+      message.role !== 'assistant' ||
+      !message.question ||
+      !authToken ||
+      message.deepLoading
+    ) {
+      return;
+    }
+
+    const conversationId =
+      activeConversationId;
+
+    if (!conversationId) {
+      return;
+    }
+
+    updateMessage(
+      conversationId,
+      message.id,
+      {
+        deepLoading: true,
+        deepError: ''
+      }
+    );
+
+    try {
+      const response = await fetch(
+        API_URL,
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization:
+              `Bearer ${authToken}`
+          },
+
+          body: JSON.stringify({
+            message: message.question,
+            history: [],
+            context: null,
+            answer_mode: 'detailed'
+          })
+        }
+      );
+
+      if (response.status === 401) {
+        logout();
+
+        throw new Error(
+          'Your session has expired. Please log in again.'
+        );
+      }
+
+      if (!response.ok) {
+        let detail = '';
+
+        try {
+          const failure =
+            await response.json();
+
+          if (
+            typeof failure.detail === 'string'
+          ) {
+            detail = failure.detail;
+          }
+        } catch {
+          // Response may not contain JSON.
+        }
+
+        throw new Error(
+          detail ||
+          `Backend returned HTTP ${response.status}`
+        );
+      }
+
+      const data: ChatResponse =
+        await response.json();
+
+      if (
+        typeof data.answer !== 'string'
+      ) {
+        throw new Error(
+          'The backend returned an invalid detailed response.'
+        );
+      }
+
+      updateMessage(
+        conversationId,
+        message.id,
+        {
+          deepAnswer: data.answer,
+          deepEvidence:
+            data.evidence ?? {},
+          deepLoading: false,
+          deepError: ''
+        }
+      );
+
+      setTimeout(
+        scrollToBottom,
+        0
+      );
+    } catch (cause) {
+      console.error(
+        'Deep analysis error:',
+        cause
+      );
+
+      updateMessage(
+        conversationId,
+        message.id,
+        {
+          deepLoading: false,
+          deepError:
+            cause instanceof Error
+              ? cause.message
+              : 'Unable to load detailed analysis.'
+        }
+      );
+    }
+  }
 
 
   // ------------------------------------------
@@ -1448,7 +1789,8 @@ function getChartOptions(message: Message) {
               })
             ),
 
-          context: analysisContext
+          context: analysisContext,
+          answer_mode: 'summary'
         })
       }
     );
@@ -1533,7 +1875,9 @@ function getChartOptions(message: Message) {
           data.source,
 
         metric:
-          data.metric
+          data.metric,
+
+        question
       }
     );
 
@@ -2515,6 +2859,125 @@ function getChartOptions(message: Message) {
 
 
 
+
+          <section class="dataset-intelligence" aria-label="Active dataset intelligence">
+            <div class="dataset-intelligence-head">
+              <div>
+                <span class="dataset-kicker">ACTIVE DATASET</span>
+                <h2>
+                  {businessProfile?.dataset_name?.replaceAll('_', ' ') ?? 'Company intelligence'}
+                </h2>
+              </div>
+
+              <button
+                type="button"
+                class="dataset-refresh"
+                onclick={() => void loadBusinessProfile()}
+                disabled={businessProfileLoading}
+              >
+                {businessProfileLoading ? 'Refreshing…' : '↻ Refresh'}
+              </button>
+            </div>
+
+            {#if businessProfileLoading && !businessProfile}
+              <div class="dataset-profile-state">
+                Loading the latest business profile…
+              </div>
+            {:else if businessProfileError}
+              <div class="dataset-profile-state dataset-profile-error" role="alert">
+                <strong>Dataset profile unavailable</strong>
+                <span>{businessProfileError}</span>
+              </div>
+            {:else if businessProfile}
+              <div class="dataset-profile-meta">
+                <span>
+                  <strong>{businessProfile.total_rows.toLocaleString()}</strong>
+                  rows
+                </span>
+                <span>
+                  <strong>{businessProfile.primary_measure?.replaceAll('_', ' ') ?? '—'}</strong>
+                  primary measure
+                </span>
+                <span>
+                  <strong>{profileDateRange()}</strong>
+                  coverage
+                </span>
+              </div>
+
+              <div class="dataset-quick-summary">
+                <span>QUICK EXECUTIVE VIEW</span>
+                <p>{businessProfile.quick_summary}</p>
+              </div>
+
+              <div class="dataset-profile-actions">
+                <button
+                  type="button"
+                  class="dataset-explain"
+                  onclick={() => {
+                    businessProfileExpanded = !businessProfileExpanded;
+                  }}
+                >
+                  {businessProfileExpanded ? 'Hide detail' : 'Explain more'}
+                  <span>{businessProfileExpanded ? '↑' : '↓'}</span>
+                </button>
+
+                <small>
+                  Database-grounded profile · no AI inference
+                </small>
+              </div>
+
+              {#if businessProfileExpanded}
+                <div class="dataset-deep-analysis">
+                  <section>
+                    <span class="dataset-detail-title">MEASURES</span>
+
+                    <div class="dataset-measure-grid">
+                      {#each businessProfile.measures.slice(0, 6) as measure}
+                        <article>
+                          <span>{measure.column_name.replaceAll('_', ' ')}</span>
+                          <strong>{formatProfileNumber(measure.total)}</strong>
+                          <small>
+                            Avg {formatProfileNumber(measure.average)}
+                          </small>
+                        </article>
+                      {/each}
+                    </div>
+                  </section>
+
+                  {#if businessProfile.category_breakdowns.length > 0}
+                    <section>
+                      <span class="dataset-detail-title">TOP BREAKDOWNS</span>
+
+                      <div class="dataset-breakdown-grid">
+                        {#each businessProfile.category_breakdowns.slice(0, 4) as breakdown}
+                          <article class="dataset-breakdown-card">
+                            <div>
+                              <strong>{breakdown.category_column.replaceAll('_', ' ')}</strong>
+                              <span>by {breakdown.measure_column.replaceAll('_', ' ')}</span>
+                            </div>
+
+                            <ol>
+                              {#each breakdown.values.slice(0, 3) as item}
+                                <li>
+                                  <span>{item.name}</span>
+                                  <strong>{formatProfileNumber(item.total)}</strong>
+                                </li>
+                              {/each}
+                            </ol>
+                          </article>
+                        {/each}
+                      </div>
+                    </section>
+                  {/if}
+                </div>
+              {/if}
+            {:else}
+              <div class="dataset-profile-state">
+                No generated business profile is available yet.
+              </div>
+            {/if}
+          </section>
+
           <div class="welcome-capabilities" aria-label="Supported capabilities"><span><b>✦</b> Natural language</span><span><b>◈</b> Analytics</span><span><b>◎</b> Data visualization</span></div>
           <div class="suggestion-label">EXPLORE YOUR DATA <span>SELECT A PROMPT ↘</span></div>
           <div class="suggestions">
@@ -2652,7 +3115,43 @@ function getChartOptions(message: Message) {
                     <button type="button" onclick={() => copyAnswer(message)} aria-label="Copy assistant answer">
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
+
+                    {#if message.source === 'active_dataset' && message.question}
+                      <button
+                        type="button"
+                        class="explain-more-button"
+                        onclick={() => void requestDeepAnalysis(message)}
+                        disabled={message.deepLoading}
+                        aria-label="Explain this answer in more detail"
+                      >
+                        {message.deepLoading
+                          ? 'Analyzing…'
+                          : message.deepAnswer
+                            ? '↻ Refresh detail'
+                            : '✦ Explain more'}
+                      </button>
+                    {/if}
                   </div>
+
+                  {#if message.deepError}
+                    <div class="deep-analysis-error" role="alert">
+                      {message.deepError}
+                    </div>
+                  {/if}
+
+                  {#if message.deepAnswer}
+                    <section class="deep-analysis-panel">
+                      <div class="deep-analysis-label">
+                        DEEP ANALYSIS
+                      </div>
+
+                      <p>{message.deepAnswer}</p>
+
+                      <div class="deep-analysis-footnote">
+                        Based only on structured evidence returned by the active dataset.
+                      </div>
+                    </section>
+                  {/if}
                 {/if}
 
 
@@ -6400,6 +6899,367 @@ function getChartOptions(message: Message) {
   .audit-filter-grid {
     grid-template-columns: 1fr;
   }
+}
+
+
+/* ==========================================================
+   BUNDLE V2 — ACTIVE DATASET INTELLIGENCE
+   ========================================================== */
+
+.dataset-intelligence {
+  width: min(100%, 760px);
+  margin: 8px 0 26px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.035),
+      rgba(255, 255, 255, 0.012)
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.025),
+    0 18px 50px rgba(0, 0, 0, 0.18);
+  text-align: left;
+}
+
+.dataset-intelligence-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dataset-kicker,
+.dataset-detail-title {
+  display: block;
+  margin-bottom: 6px;
+  color: rgba(158, 232, 218, 0.58);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.dataset-intelligence h2 {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  text-transform: capitalize;
+}
+
+.dataset-refresh,
+.dataset-explain {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  color: rgba(255, 255, 255, 0.66);
+  cursor: pointer;
+}
+
+.dataset-refresh {
+  padding: 8px 10px;
+  font-size: 10px;
+}
+
+.dataset-refresh:hover,
+.dataset-explain:hover {
+  border-color: rgba(136, 226, 210, 0.22);
+  background: rgba(126, 226, 207, 0.045);
+  color: rgba(200, 247, 238, 0.88);
+}
+
+.dataset-refresh:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.dataset-profile-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.dataset-profile-meta > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.12);
+  color: rgba(255, 255, 255, 0.32);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.dataset-profile-meta strong {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.dataset-quick-summary {
+  margin-top: 12px;
+  padding: 14px 15px;
+  border-left: 2px solid rgba(136, 226, 210, 0.34);
+  border-radius: 0 12px 12px 0;
+  background: rgba(126, 226, 207, 0.025);
+}
+
+.dataset-quick-summary > span {
+  color: rgba(157, 231, 217, 0.52);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.dataset-quick-summary p {
+  max-width: none;
+  margin: 7px 0 0;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.dataset-profile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.dataset-explain {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  font-size: 10px;
+}
+
+.dataset-profile-actions small {
+  color: rgba(255, 255, 255, 0.26);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+}
+
+.dataset-deep-analysis {
+  display: grid;
+  gap: 15px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dataset-measure-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.dataset-measure-grid article {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.11);
+}
+
+.dataset-measure-grid article > span {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.dataset-measure-grid article > strong {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.dataset-measure-grid article > small {
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 8px;
+}
+
+.dataset-breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dataset-breakdown-card {
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.09);
+}
+
+.dataset-breakdown-card > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dataset-breakdown-card > div strong {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.dataset-breakdown-card > div span {
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 8px;
+}
+
+.dataset-breakdown-card ol {
+  display: grid;
+  gap: 5px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dataset-breakdown-card li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 9px;
+}
+
+.dataset-breakdown-card li strong {
+  color: rgba(176, 236, 225, 0.63);
+  font-weight: 600;
+}
+
+.dataset-profile-state {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 10px;
+}
+
+.dataset-profile-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-color: rgba(255, 130, 130, 0.12);
+  color: rgba(255, 170, 170, 0.62);
+}
+
+.dataset-profile-error strong {
+  color: rgba(255, 185, 185, 0.78);
+}
+
+@media (max-width: 700px) {
+  .dataset-profile-meta,
+  .dataset-measure-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .dataset-breakdown-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dataset-profile-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 470px) {
+  .dataset-intelligence {
+    padding: 14px;
+  }
+
+  .dataset-profile-meta,
+  .dataset-measure-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dataset-intelligence-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dataset-refresh {
+    align-self: flex-start;
+  }
+}
+
+
+/* Bundle v2 Stage 8 — per-answer deep analysis */
+
+.explain-more-button:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.deep-analysis-panel {
+  margin-top: 11px;
+  padding: 13px 14px;
+  border: 1px solid rgba(137, 229, 213, 0.12);
+  border-left: 2px solid rgba(137, 229, 213, 0.38);
+  border-radius: 0 12px 12px 0;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(125, 224, 207, 0.035),
+      rgba(255, 255, 255, 0.012)
+    );
+}
+
+.deep-analysis-label {
+  margin-bottom: 7px;
+  color: rgba(158, 232, 218, 0.56);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.deep-analysis-panel p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  line-height: 1.68;
+}
+
+.deep-analysis-footnote {
+  margin-top: 9px;
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+}
+
+.deep-analysis-error {
+  margin-top: 9px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 130, 130, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 95, 95, 0.035);
+  color: rgba(255, 178, 178, 0.72);
+  font-size: 9px;
 }
 
 </style>
