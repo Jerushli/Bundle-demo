@@ -163,6 +163,16 @@
 
   
 
+  type RAGCitation = {
+    index: number;
+    document_id: string;
+    title?: string | null;
+    document_type?: string | null;
+    access_level?: string | null;
+    similarity?: number | null;
+  };
+
+
   type Message = {
 
     id: string;
@@ -175,7 +185,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag';
 
     metric?: string;
 
@@ -188,6 +198,8 @@
     deepLoading?: boolean;
 
     deepError?: string;
+
+    citations?: RAGCitation[];
 
   };
 
@@ -225,13 +237,15 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag';
 
     metric?: string;
 
     answer_mode?: 'summary' | 'detailed';
 
     evidence?: Record<string, unknown>;
+
+    citations?: RAGCitation[];
 
     year?: number | null;
     country?: string | null;
@@ -1453,16 +1467,15 @@ function getChartOptions(message: Message) {
 
         return {
           ...conversation,
-          messages:
-            conversation.messages.map(
-              (message) =>
-                message.id === messageId
-                  ? {
-                      ...message,
-                      ...patch
-                    }
-                  : message
-            )
+          messages: conversation.messages.map(
+            (message) =>
+              message.id === messageId
+                ? {
+                    ...message,
+                    ...patch
+                  }
+                : message
+          )
         };
       }
     );
@@ -1631,6 +1644,8 @@ function getChartOptions(message: Message) {
           deepAnswer: data.answer,
           deepEvidence:
             data.evidence ?? {},
+          citations:
+            data.citations ?? message.citations ?? [],
           deepLoading: false,
           deepError: ''
         }
@@ -1877,7 +1892,10 @@ function getChartOptions(message: Message) {
         metric:
           data.metric,
 
-        question
+        question,
+
+        citations:
+          data.citations ?? []
       }
     );
 
@@ -3116,7 +3134,7 @@ function getChartOptions(message: Message) {
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
 
-                    {#if message.source === 'active_dataset' && message.question}
+                    {#if (message.source === 'active_dataset' || message.source === 'rag') && message.question}
                       <button
                         type="button"
                         class="explain-more-button"
@@ -3148,8 +3166,42 @@ function getChartOptions(message: Message) {
                       <p>{message.deepAnswer}</p>
 
                       <div class="deep-analysis-footnote">
-                        Based only on structured evidence returned by the active dataset.
+                        {message.source === 'rag'
+                          ? 'Based only on authorized retrieved document evidence.'
+                          : 'Based only on structured evidence returned by the active dataset.'}
                       </div>
+                    </section>
+                  {/if}
+
+                  {#if message.citations && message.citations.length > 0}
+                    <section class="rag-citations" aria-label="Document evidence">
+                      <div class="rag-citations-title">
+                        DOCUMENT EVIDENCE
+                      </div>
+
+                      {#each message.citations as citation}
+                        <div class="rag-citation-row">
+                          <span class="rag-citation-index">
+                            [{citation.index}]
+                          </span>
+
+                          <div class="rag-citation-copy">
+                            <strong>
+                              {citation.title || citation.document_id}
+                            </strong>
+
+                            <small>
+                              {citation.document_id}
+                              {citation.document_type
+                                ? ` · ${citation.document_type}`
+                                : ''}
+                              {typeof citation.similarity === 'number'
+                                ? ` · similarity ${citation.similarity.toFixed(3)}`
+                                : ''}
+                            </small>
+                          </div>
+                        </div>
+                      {/each}
                     </section>
                   {/if}
                 {/if}
@@ -7260,6 +7312,61 @@ function getChartOptions(message: Message) {
   background: rgba(255, 95, 95, 0.035);
   color: rgba(255, 178, 178, 0.72);
   font-size: 9px;
+}
+
+
+/* Bundle v2 Stage 10.2 — RAG evidence citations */
+
+.rag-citations {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.09);
+}
+
+.rag-citations-title {
+  margin-bottom: 2px;
+  color: rgba(158, 232, 218, 0.52);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.rag-citation-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rag-citation-index {
+  flex: 0 0 auto;
+  color: rgba(158, 232, 218, 0.68);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.rag-citation-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rag-citation-copy strong {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 9px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rag-citation-copy small {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 8px;
 }
 
 </style>

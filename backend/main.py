@@ -30,6 +30,7 @@ from slowapi.util import get_remote_address
 from backend.ai import process_chat
 from backend.dataset_ai import process_dataset_chat
 from backend.dataset_profiles import get_active_dataset_name
+from backend.rag_chat import process_rag_chat
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -674,6 +675,16 @@ def chat(
                 answer_mode=body.answer_mode,
                 role=current_user.role,
             )
+
+            if result.get(
+                "source"
+            ) == "rag_required":
+                result = process_rag_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    dataset_name=get_active_dataset_name(),
+                    answer_mode=body.answer_mode,
+                )
 
         execution_time_ms = int(
             (
