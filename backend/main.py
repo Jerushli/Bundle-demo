@@ -1,4 +1,6 @@
 import logging
+import os
+import uuid
 
 from pathlib import Path
 from time import perf_counter
@@ -6,11 +8,15 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
+    File,
+    Form,
     HTTPException,
     Query,
     Request,
+    UploadFile,
 )
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,8 +42,23 @@ from backend.dataset_registry import (
     activate_dataset,
     dataset_to_dict,
     get_active_dataset,
+    get_dataset,
     list_datasets,
     register_existing_dataset,
+)
+from backend.dataset_pipeline import (
+    create_pipeline_job,
+    get_pipeline_job,
+    list_pipeline_jobs,
+    run_dataset_pipeline,
+    update_pipeline_job,
+)
+from backend.dataset_refresh import (
+    run_dataset_refresh,
+    technical_refresh_name,
+)
+from backend.ingestion import (
+    sanitize_identifier,
 )
 from backend.rag_chat import process_rag_chat
 from backend.hybrid_chat import process_hybrid_chat, should_use_hybrid
@@ -111,6 +132,36 @@ FRONTEND_BUILD = (
     BASE_DIR
     / "frontend"
     / "build"
+)
+
+
+UPLOAD_ROOT = Path(
+    os.getenv(
+        "BUNDLE_UPLOAD_DIR",
+        str(
+            BASE_DIR
+            / "data"
+            / "uploads"
+        ),
+    )
+).resolve()
+
+MAX_UPLOAD_BYTES = int(
+    os.getenv(
+        "BUNDLE_MAX_UPLOAD_BYTES",
+        str(
+            10
+            * 1024
+            * 1024
+            * 1024
+        ),
+    )
+)
+
+UPLOAD_CHUNK_BYTES = (
+    8
+    * 1024
+    * 1024
 )
 
 
@@ -797,6 +848,512 @@ def admin_activate_dataset(
             status_code=400,
             detail=str(exc),
         ) from exc
+
+
+# ==================================================
+# DATASET UPLOAD + PIPELINE API
+# ==================================================
+
+@app.post(
+    "/api/admin/datasets/upload",
+    status_code=202,
+)
+async def admin_upload_dataset(
+    background_tasks: BackgroundTasks,
+    dataset_name: str = Form(...),
+    display_name: str = Form(...),
+    file: UploadFile = File(...),
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    clean_name = sanitize_identifier(
+        dataset_name
+    )
+
+    if get_dataset(
+        clean_name
+    ) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Dataset {clean_name!r} already exists. "
+                "Stage 12.2 only accepts new dataset names; "
+                "daily refresh of an existing dataset comes in Stage 12.3."
+            ),
+        )
+
+    original_filename = (
+        Path(
+            file.filename
+            or "upload.csv"
+        ).name
+    )
+
+    if (
+        Path(
+            original_filename
+        ).suffix.lower()
+        != ".csv"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Only CSV uploads are supported in Stage 12.2.",
+        )
+
+    try:
+        register_existing_dataset(
+            dataset_name=clean_name,
+            display_name=display_name,
+            source_type="csv_upload",
+            source_name=original_filename,
+            analytics_table=None,
+            status="registered",
+            row_count=None,
+        )
+
+        job_id = create_pipeline_job(
+            dataset_name=clean_name,
+            original_filename=(
+                original_filename
+            ),
+        )
+
+        dataset_dir = (
+            UPLOAD_ROOT
+            / clean_name
+        )
+
+        dataset_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        destination = (
+            dataset_dir
+            / (
+                f"{job_id}_"
+                f"{uuid.uuid4().hex}.csv"
+            )
+        )
+
+        total_bytes = 0
+
+        try:
+            with destination.open(
+                "wb"
+            ) as handle:
+                while True:
+                    chunk = await file.read(
+                        UPLOAD_CHUNK_BYTES
+                    )
+
+                    if not chunk:
+                        break
+
+                    total_bytes += len(
+                        chunk
+                    )
+
+                    if total_bytes > MAX_UPLOAD_BYTES:
+                        raise ValueError(
+                            "Upload exceeds BUNDLE_MAX_UPLOAD_BYTES."
+                        )
+
+                    handle.write(
+                        chunk
+                    )
+
+        finally:
+            await file.close()
+
+        if total_bytes == 0:
+            raise ValueError(
+                "Uploaded CSV is empty."
+            )
+
+        update_pipeline_job(
+            job_id,
+            status="queued",
+            current_stage="queued",
+            uploaded_path=str(
+                destination
+            ),
+            error_message=None,
+        )
+
+        background_tasks.add_task(
+            run_dataset_pipeline,
+            job_id=job_id,
+            dataset_name=clean_name,
+            uploaded_path=str(
+                destination
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Upload dataset: "
+                f"{clean_name}"
+            ),
+            tool_name=(
+                "dataset_pipeline"
+            ),
+            status="success",
+        )
+
+        return {
+            "job_id": job_id,
+            "dataset_name": clean_name,
+            "display_name": display_name,
+            "original_filename": (
+                original_filename
+            ),
+            "uploaded_bytes": (
+                total_bytes
+            ),
+            "status": "queued",
+            "message": (
+                "Upload completed. "
+                "Dataset pipeline has been queued."
+            ),
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        try:
+            if (
+                "job_id"
+                in locals()
+            ):
+                update_pipeline_job(
+                    job_id,
+                    status="failed",
+                    current_stage="failed",
+                    error_message=(
+                        f"{type(exc).__name__}: {exc}"
+                    )[:2000],
+                    finished=True,
+                )
+        except Exception:
+            pass
+
+        try:
+            if (
+                "destination"
+                in locals()
+                and destination.exists()
+            ):
+                destination.unlink()
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+
+
+@app.post(
+    "/api/admin/datasets/{dataset_name}/refresh",
+    status_code=202,
+)
+async def admin_refresh_dataset(
+    dataset_name: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    clean_name = sanitize_identifier(
+        dataset_name
+    )
+
+    record = get_dataset(
+        clean_name
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Dataset {clean_name!r} is not registered."
+            ),
+        )
+
+    if record.status != "ready":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Dataset {clean_name!r} is not READY and "
+                "cannot be refreshed safely."
+            ),
+        )
+
+    original_filename = (
+        Path(
+            file.filename
+            or "refresh.csv"
+        ).name
+    )
+
+    if (
+        Path(
+            original_filename
+        ).suffix.lower()
+        != ".csv"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Only CSV refresh files are supported.",
+        )
+
+    destination = None
+    job_id = None
+
+    try:
+        job_id = create_pipeline_job(
+            dataset_name=clean_name,
+            original_filename=(
+                original_filename
+            ),
+            job_type="refresh",
+        )
+
+        technical_name = (
+            technical_refresh_name(
+                clean_name,
+                job_id,
+            )
+        )
+
+        dataset_dir = (
+            UPLOAD_ROOT
+            / clean_name
+            / "refreshes"
+        )
+
+        dataset_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        destination = (
+            dataset_dir
+            / (
+                f"refresh_{job_id}_"
+                f"{uuid.uuid4().hex}.csv"
+            )
+        )
+
+        total_bytes = 0
+
+        try:
+            with destination.open(
+                "wb"
+            ) as handle:
+                while True:
+                    chunk = await file.read(
+                        UPLOAD_CHUNK_BYTES
+                    )
+
+                    if not chunk:
+                        break
+
+                    total_bytes += len(
+                        chunk
+                    )
+
+                    if total_bytes > MAX_UPLOAD_BYTES:
+                        raise ValueError(
+                            "Upload exceeds BUNDLE_MAX_UPLOAD_BYTES."
+                        )
+
+                    handle.write(
+                        chunk
+                    )
+
+        finally:
+            await file.close()
+
+        if total_bytes == 0:
+            raise ValueError(
+                "Refresh CSV is empty."
+            )
+
+        # Update path, technical identity, and queue state.
+        from backend.ingestion import (
+            get_ingest_connection,
+        )
+
+        with get_ingest_connection() as connection:
+            with connection.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE bundle.pipeline_jobs
+                    SET
+                        uploaded_path = %s,
+                        technical_dataset_name = %s,
+                        status = 'queued',
+                        current_stage = 'queued',
+                        error_message = NULL,
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (
+                        str(
+                            destination
+                        ),
+                        technical_name,
+                        job_id,
+                    ),
+                )
+
+                connection.commit()
+
+        background_tasks.add_task(
+            run_dataset_refresh,
+            job_id=job_id,
+            dataset_name=clean_name,
+            uploaded_path=str(
+                destination
+            ),
+            original_filename=(
+                original_filename
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Refresh dataset: "
+                f"{clean_name}"
+            ),
+            tool_name=(
+                "dataset_refresh"
+            ),
+            status="success",
+        )
+
+        return {
+            "job_id": job_id,
+            "job_type": "refresh",
+            "dataset_name": clean_name,
+            "technical_dataset_name": (
+                technical_name
+            ),
+            "original_filename": (
+                original_filename
+            ),
+            "uploaded_bytes": (
+                total_bytes
+            ),
+            "status": "queued",
+            "message": (
+                "Refresh upload completed. "
+                "A safe versioned refresh has been queued. "
+                "The current live dataset remains available until promotion."
+            ),
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        try:
+            if job_id is not None:
+                update_pipeline_job(
+                    job_id,
+                    status="failed",
+                    current_stage="failed",
+                    error_message=(
+                        f"{type(exc).__name__}: {exc}"
+                    )[:2000],
+                    finished=True,
+                )
+        except Exception:
+            pass
+
+        try:
+            if (
+                destination is not None
+                and destination.exists()
+            ):
+                destination.unlink()
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+
+@app.get(
+    "/api/admin/dataset-jobs",
+)
+def admin_list_dataset_jobs(
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+    ),
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    return list_pipeline_jobs(
+        limit=limit
+    )
+
+
+@app.get(
+    "/api/admin/dataset-jobs/{job_id}",
+)
+def admin_get_dataset_job(
+    job_id: int,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    job = get_pipeline_job(
+        job_id
+    )
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Pipeline job {job_id} was not found."
+            ),
+        )
+
+    return job
 
 
 # ==================================================
