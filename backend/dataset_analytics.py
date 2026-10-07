@@ -187,7 +187,7 @@ def get_active_dataset_schema(
         if not name:
             continue
 
-        role = str(
+        column_role = str(
             column.get(
                 "proposed_role",
                 "",
@@ -209,7 +209,7 @@ def get_active_dataset_schema(
         )
 
         if (
-            role == "measure"
+            column_role == "measure"
             and proposed_type in {
                 "integer",
                 "numeric",
@@ -219,20 +219,20 @@ def get_active_dataset_schema(
             continue
 
         if (
-            role == "date_dimension"
+            column_role == "date_dimension"
             or proposed_type == "date"
         ):
             dates.append(name)
             continue
 
-        if role in {
+        if column_role in {
             "category",
             "dimension",
         }:
             categories.append(name)
             continue
 
-        if role == "identifier":
+        if column_role == "identifier":
             identifiers.append(name)
             continue
 

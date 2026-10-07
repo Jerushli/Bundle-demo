@@ -1245,7 +1245,7 @@ def process_dataset_chat(
 
     if history:
         for item in history[-6:]:
-            role = item.get(
+            message_role = item.get(
                 "role"
             )
 
@@ -1254,7 +1254,7 @@ def process_dataset_chat(
             )
 
             if (
-                role in {
+                message_role in {
                     "user",
                     "assistant",
                 }
@@ -1262,7 +1262,7 @@ def process_dataset_chat(
             ):
                 messages.append(
                     {
-                        "role": role,
+                        "role": message_role,
                         "content": str(
                             content
                         )[:4000],
