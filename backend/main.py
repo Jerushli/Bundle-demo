@@ -29,7 +29,16 @@ from slowapi.util import get_remote_address
 
 from backend.ai import process_chat
 from backend.dataset_ai import process_dataset_chat
-from backend.dataset_profiles import get_active_dataset_name
+from backend.dataset_profiles import (
+    get_active_dataset_name,
+)
+from backend.dataset_registry import (
+    activate_dataset,
+    dataset_to_dict,
+    get_active_dataset,
+    list_datasets,
+    register_existing_dataset,
+)
 from backend.rag_chat import process_rag_chat
 from backend.hybrid_chat import process_hybrid_chat, should_use_hybrid
 from backend.audit import (
@@ -225,6 +234,50 @@ class ChatRequest(BaseModel):
         "summary",
         "detailed",
     ] = "summary"
+
+
+
+class RegisterDatasetRequest(BaseModel):
+
+    dataset_name: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    display_name: str = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+    source_type: str = Field(
+        default="existing_postgresql",
+        min_length=1,
+        max_length=50,
+    )
+
+    source_name: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+
+    analytics_table: str | None = Field(
+        default=None,
+        max_length=200,
+    )
+
+    status: Literal[
+        "registered",
+        "profiled",
+        "validated",
+        "ready",
+        "failed",
+    ] = "ready"
+
+    row_count: int | None = Field(
+        default=None,
+        ge=0,
+    )
+
 
 
 
@@ -584,8 +637,42 @@ def admin_list_audit_logs(
 
 
 # ==================================================
-# ACTIVE DATASET PROFILE API
+# DATASET REGISTRY API
 # ==================================================
+
+@app.get("/api/datasets")
+def datasets_list(
+    current_user:
+    AuthenticatedUser = Depends(
+        verify_access_token
+    ),
+):
+    return [
+        dataset_to_dict(
+            item
+        )
+        for item in list_datasets()
+    ]
+
+
+@app.get("/api/datasets/active")
+def active_dataset(
+    current_user:
+    AuthenticatedUser = Depends(
+        verify_access_token
+    ),
+):
+    try:
+        return dataset_to_dict(
+            get_active_dataset()
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
 
 @app.get("/api/datasets/active/profile")
 def active_dataset_profile(
@@ -594,20 +681,120 @@ def active_dataset_profile(
         verify_access_token
     ),
 ):
-    """
-    Return the latest deterministic Stage 5 business
-    profile for the configured active dataset.
-
-    Viewer accounts may read this endpoint because it
-    exposes precomputed read-only analytics only.
-    """
-
     try:
         return get_latest_business_profile()
 
     except ValueError as exc:
         raise HTTPException(
             status_code=404,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post(
+    "/api/admin/datasets/register",
+    status_code=201,
+)
+def admin_register_dataset(
+    body: RegisterDatasetRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    try:
+        record = register_existing_dataset(
+            dataset_name=(
+                body.dataset_name
+            ),
+            display_name=(
+                body.display_name
+            ),
+            source_type=(
+                body.source_type
+            ),
+            source_name=(
+                body.source_name
+            ),
+            analytics_table=(
+                body.analytics_table
+            ),
+            status=(
+                body.status
+            ),
+            row_count=(
+                body.row_count
+            ),
+        )
+
+        return dataset_to_dict(
+            record
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post(
+    "/api/admin/datasets/{dataset_name}/activate",
+)
+def admin_activate_dataset(
+    dataset_name: str,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    try:
+        record = activate_dataset(
+            dataset_name
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Activate dataset: "
+                f"{record.dataset_name}"
+            ),
+            tool_name=(
+                "dataset_registry"
+            ),
+            status="success",
+        )
+
+        return dataset_to_dict(
+            record
+        )
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Activate dataset: "
+                f"{dataset_name}"
+            ),
+            tool_name=(
+                "dataset_registry"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
             detail=str(exc),
         ) from exc
 
@@ -647,8 +834,7 @@ def chat(
 
         # Bundle v2 structured analytics path.
         #
-        # If BUNDLE_ACTIVE_DATASET is configured, questions are routed
-        # through the validated dataset-aware analytics layer.
+        # The active dataset is resolved from bundle.dataset_registry.
         #
         # Set BUNDLE_CHAT_MODE=legacy only when you intentionally want
         # to use the original fixed financial toolset.
