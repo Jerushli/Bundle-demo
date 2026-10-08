@@ -38,6 +38,30 @@
   ChartJS.register(...chartRegistryItems);
 
 
+
+  // ------------------------------------------
+  // Safe assistant text formatting
+  // ------------------------------------------
+
+  function renderAssistantText(value: string): string {
+    // Escape HTML first so model/database text cannot inject markup.
+    const escaped = value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+    // Support the small Markdown subset Bundle actually emits:
+    // **bold**, *italic*, `inline code`, and line breaks.
+    return escaped
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>')
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+      .replace(/\r?\n/g, '<br />');
+  }
+
+
   // ------------------------------------------
   // Authentication - Login page
   //-------------------------------------------
@@ -3124,9 +3148,7 @@ function getChartOptions(message: Message) {
 
 
                 <div class="message-text">
-
-                  {message.text}
-
+                  {@html renderAssistantText(message.text)}
                 </div>
 
                 {#if message.role === 'assistant'}
@@ -3164,7 +3186,9 @@ function getChartOptions(message: Message) {
                         DEEP ANALYSIS
                       </div>
 
-                      <p>{message.deepAnswer}</p>
+                      <p class="deep-analysis-text">
+                        {@html renderAssistantText(message.deepAnswer)}
+                      </p>
 
                       <div class="deep-analysis-footnote">
                         {message.source === 'rag'
@@ -7267,6 +7291,28 @@ function getChartOptions(message: Message) {
   }
 }
 
+
+
+/* Bundle assistant lightweight Markdown rendering */
+.message-text :global(strong),
+.deep-analysis-text :global(strong) {
+  font-weight: 700;
+  color: inherit;
+}
+
+.message-text :global(em),
+.deep-analysis-text :global(em) {
+  font-style: italic;
+}
+
+.message-text :global(code),
+.deep-analysis-text :global(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 0.08em 0.32em;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+}
 
 /* Bundle v2 Stage 8 — per-answer deep analysis */
 
