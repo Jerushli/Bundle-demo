@@ -389,6 +389,8 @@ def _forecast_evidence(
     *,
     role: str,
     measures: list[str],
+    target_column: str,
+    target_value: str,
 ) -> dict[str, Any]:
     if not measures:
         return {
@@ -415,6 +417,8 @@ def _forecast_evidence(
             date_column=None,
             horizon_months=3,
             lookback_months=24,
+            group_by=target_column,
+            group_value=target_value,
         )
 
         payload = forecast_to_dict(
@@ -423,10 +427,14 @@ def _forecast_evidence(
 
         return {
             "available": True,
-            "scope": "overall_dataset",
+            "scope": "target_specific",
+            "target": {
+                "column": target_column,
+                "value": target_value,
+            },
             "important_scope_note": (
-                "This Stage 15.1 forecast is for the overall active dataset, "
-                "not specifically filtered to the decision target."
+                "This forecast is filtered to the decision target before "
+                "monthly aggregation and model fitting."
             ),
             **payload,
         }
@@ -736,6 +744,8 @@ def build_decision_evidence(
     forecast = _forecast_evidence(
         role=role,
         measures=measures,
+        target_column=target_column,
+        target_value=target_value,
     )
 
     rag = _rag_evidence(

@@ -69,6 +69,9 @@ class ForecastResult:
     measure: str
     date_column: str
     aggregation: str
+    group_by: str | None
+    group_value: str | None
+    scope: str
     horizon_months: int
     history_start: str
     history_end: str
@@ -429,6 +432,8 @@ def _load_monthly_history(
     measure: str,
     date_column: str,
     lookback_months: int,
+    group_by: str | None = None,
+    group_value: str | None = None,
 ) -> list[
     tuple[
         date,
@@ -439,52 +444,109 @@ def _load_monthly_history(
         schema.analytics_table
     )
 
-    query = sql.SQL(
-        """
-        WITH monthly AS (
+    if group_by is None:
+        query = sql.SQL(
+            """
+            WITH monthly AS (
+                SELECT
+                    date_trunc(
+                        'month',
+                        {date_column}
+                    )::date AS month_start,
+                    SUM(
+                        {measure}
+                    )::double precision AS value
+                FROM {schema_name}.{table_name}
+                WHERE
+                    {date_column} IS NOT NULL
+                    AND {measure} IS NOT NULL
+                GROUP BY 1
+            )
             SELECT
-                date_trunc(
-                    'month',
-                    {date_column}
-                )::date AS month_start,
-                SUM(
-                    {measure}
-                )::double precision AS value
-            FROM {schema_name}.{table_name}
-            WHERE
-                {date_column} IS NOT NULL
-                AND {measure} IS NOT NULL
-            GROUP BY 1
+                month_start,
+                value
+            FROM monthly
+            ORDER BY month_start DESC
+            LIMIT %s
+            """
+        ).format(
+            date_column=sql.Identifier(
+                date_column
+            ),
+            measure=sql.Identifier(
+                measure
+            ),
+            schema_name=sql.Identifier(
+                schema_name
+            ),
+            table_name=sql.Identifier(
+                table_name
+            ),
         )
-        SELECT
-            month_start,
-            value
-        FROM monthly
-        ORDER BY month_start DESC
-        LIMIT %s
-        """
-    ).format(
-        date_column=sql.Identifier(
-            date_column
-        ),
-        measure=sql.Identifier(
-            measure
-        ),
-        schema_name=sql.Identifier(
-            schema_name
-        ),
-        table_name=sql.Identifier(
-            table_name
-        ),
-    )
+
+        params = (
+            lookback_months,
+        )
+
+    else:
+        query = sql.SQL(
+            """
+            WITH monthly AS (
+                SELECT
+                    date_trunc(
+                        'month',
+                        {date_column}
+                    )::date AS month_start,
+                    SUM(
+                        {measure}
+                    )::double precision AS value
+                FROM {schema_name}.{table_name}
+                WHERE
+                    {date_column} IS NOT NULL
+                    AND {measure} IS NOT NULL
+                    AND CAST(
+                        {group_by}
+                        AS TEXT
+                    ) = %s
+                GROUP BY 1
+            )
+            SELECT
+                month_start,
+                value
+            FROM monthly
+            ORDER BY month_start DESC
+            LIMIT %s
+            """
+        ).format(
+            date_column=sql.Identifier(
+                date_column
+            ),
+            measure=sql.Identifier(
+                measure
+            ),
+            schema_name=sql.Identifier(
+                schema_name
+            ),
+            table_name=sql.Identifier(
+                table_name
+            ),
+            group_by=sql.Identifier(
+                group_by
+            ),
+        )
+
+        params = (
+            str(
+                group_value
+            ),
+            lookback_months,
+        )
 
     with get_ingest_connection() as connection:
         with connection.cursor() as cur:
             cur.execute(
                 query,
-                (
-                    lookback_months,
-                ),
+                params,
             )
 
             rows = cur.fetchall()
@@ -569,6 +631,8 @@ def forecast_monthly_measure(
     date_column: str | None = None,
     horizon_months: int = 3,
     lookback_months: int = DEFAULT_LOOKBACK_MONTHS,
+    group_by: str | None = None,
+    group_value: str | None = None,
 ) -> ForecastResult:
     horizon = max(
         1,
@@ -620,6 +684,29 @@ def forecast_monthly_measure(
         schema=schema,
     )
 
+    if (
+        group_by is None
+        and group_value is not None
+    ) or (
+        group_by is not None
+        and group_value is None
+    ):
+        raise ValueError(
+            "group_by and group_value must be supplied together."
+        )
+
+    if group_by is not None:
+        if group_by not in schema.categories:
+            raise ValueError(
+                f"Forecast target dimension {group_by!r} is not "
+                "available or permitted."
+            )
+
+        enforce_column_access(
+            permission=permission,
+            column=group_by,
+        )
+
     enforce_column_access(
         permission=permission,
         column=selected_measure,
@@ -635,11 +722,20 @@ def forecast_monthly_measure(
         measure=selected_measure,
         date_column=selected_date,
         lookback_months=lookback,
+        group_by=group_by,
+        group_value=group_value,
     )
 
     if len(history) < MIN_HISTORY_POINTS:
+        scope_text = (
+            f" for {group_by}={group_value!r}"
+            if group_by is not None
+            else ""
+        )
+
         raise ValueError(
-            "Not enough monthly history to forecast safely. "
+            "Not enough monthly history to forecast safely"
+            f"{scope_text}. "
             f"Need at least {MIN_HISTORY_POINTS} observed months; "
             f"found {len(history)}."
         )
@@ -868,6 +964,13 @@ def forecast_monthly_measure(
         measure=selected_measure,
         date_column=selected_date,
         aggregation="sum",
+        group_by=group_by,
+        group_value=group_value,
+        scope=(
+            "target_specific"
+            if group_by is not None
+            else "overall_dataset"
+        ),
         horizon_months=horizon,
         history_start=(
             history[0][0]
