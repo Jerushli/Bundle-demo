@@ -88,6 +88,10 @@ from backend.decision_chat import (
     process_decision_chat,
     should_use_decision,
 )
+from backend.investment_model import (
+    calculate_investment_scenario,
+    investment_result_to_dict,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -311,6 +315,61 @@ class ChatRequest(BaseModel):
         "summary",
         "detailed",
     ] = "summary"
+
+
+
+class InvestmentScenarioRequest(BaseModel):
+
+    target_column: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    target_value: str = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+    investment_amount: float = Field(
+        gt=0,
+    )
+
+    expected_revenue_uplift_percent: float = Field(
+        ge=-100,
+        le=500,
+    )
+
+    contribution_margin_percent: float = Field(
+        ge=0,
+        le=100,
+    )
+
+    horizon_months: int = Field(
+        ge=1,
+        le=120,
+    )
+
+    baseline_period_months: int = Field(
+        ge=1,
+        le=120,
+    )
+
+    hurdle_rate_percent: float = Field(
+        ge=0,
+        le=500,
+    )
+
+    max_payback_months: float = Field(
+        gt=0,
+        le=240,
+    )
+
+    baseline_measure: str = Field(
+        default="sales",
+        min_length=1,
+        max_length=100,
+    )
+
 
 
 
@@ -1442,6 +1501,125 @@ def admin_get_dataset_job(
         )
 
     return job
+
+
+# ==================================================
+# INVESTMENT MODEL API
+# ==================================================
+
+@app.post(
+    "/api/investment/scenario",
+)
+def investment_scenario(
+    body: InvestmentScenarioRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        result = calculate_investment_scenario(
+            role=current_user.role,
+            target_column=(
+                body.target_column
+            ),
+            target_value=(
+                body.target_value
+            ),
+            investment_amount=(
+                body.investment_amount
+            ),
+            expected_revenue_uplift_percent=(
+                body.expected_revenue_uplift_percent
+            ),
+            contribution_margin_percent=(
+                body.contribution_margin_percent
+            ),
+            horizon_months=(
+                body.horizon_months
+            ),
+            baseline_period_months=(
+                body.baseline_period_months
+            ),
+            hurdle_rate_percent=(
+                body.hurdle_rate_percent
+            ),
+            max_payback_months=(
+                body.max_payback_months
+            ),
+            baseline_measure=(
+                body.baseline_measure
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Investment scenario for "
+                f"{result.target_column}={result.target_value}"
+            ),
+            tool_name=(
+                "investment_model"
+            ),
+            status="success",
+        )
+
+        return investment_result_to_dict(
+            result
+        )
+
+    except PermissionError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Investment scenario"
+            ),
+            tool_name=(
+                "investment_model"
+            ),
+            status="forbidden",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Investment scenario"
+            ),
+            tool_name=(
+                "investment_model"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
 
 
 # ==================================================
