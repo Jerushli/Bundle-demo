@@ -185,7 +185,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario';
 
     metric?: string;
 
@@ -237,7 +237,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario';
 
     metric?: string;
 
@@ -3135,7 +3135,7 @@ function getChartOptions(message: Message) {
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
 
-                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast') && message.question}
+                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast' || message.source === 'scenario') && message.question}
                       <button
                         type="button"
                         class="explain-more-button"
@@ -3173,7 +3173,9 @@ function getChartOptions(message: Message) {
                             ? 'Based on permitted structured metrics plus authorized document evidence.'
                             : message.source === 'forecast'
                               ? 'Based on the deterministic forecast engine, historical data, uncertainty range, and back-test diagnostics.'
-                              : 'Based only on structured evidence returned by the active dataset.'}
+                              : message.source === 'scenario'
+                                ? 'Hypothetical what-if analysis based on the current database baseline and explicit assumptions; this is not a forecast.'
+                                : 'Based only on structured evidence returned by the active dataset.'}
                       </div>
                     </section>
                   {/if}

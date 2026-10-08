@@ -76,6 +76,10 @@ from backend.scenario_engine import (
     scenario_to_dict,
     simulate_measure_percent_change,
 )
+from backend.scenario_chat import (
+    process_scenario_chat,
+    should_use_scenario,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -1742,7 +1746,17 @@ def chat(
 
             dataset_name = get_active_dataset_name()
 
-            if should_use_forecast(
+            if should_use_scenario(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_scenario_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_forecast(
                 question=body.message,
                 role=current_user.role,
             ):
