@@ -185,7 +185,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast';
 
     metric?: string;
 
@@ -237,7 +237,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast';
 
     metric?: string;
 
@@ -3135,7 +3135,7 @@ function getChartOptions(message: Message) {
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
 
-                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid') && message.question}
+                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast') && message.question}
                       <button
                         type="button"
                         class="explain-more-button"
@@ -3171,7 +3171,9 @@ function getChartOptions(message: Message) {
                           ? 'Based only on authorized retrieved document evidence.'
                           : message.source === 'hybrid'
                             ? 'Based on permitted structured metrics plus authorized document evidence.'
-                            : 'Based only on structured evidence returned by the active dataset.'}
+                            : message.source === 'forecast'
+                              ? 'Based on the deterministic forecast engine, historical data, uncertainty range, and back-test diagnostics.'
+                              : 'Based only on structured evidence returned by the active dataset.'}
                       </div>
                     </section>
                   {/if}

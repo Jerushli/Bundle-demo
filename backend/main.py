@@ -67,6 +67,10 @@ from backend.forecast_engine import (
     forecast_to_dict,
     get_forecast_capabilities,
 )
+from backend.forecast_chat import (
+    process_forecast_chat,
+    should_use_forecast,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -1580,7 +1584,17 @@ def chat(
 
             dataset_name = get_active_dataset_name()
 
-            if should_use_hybrid(
+            if should_use_forecast(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_forecast_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_hybrid(
                 question=body.message,
                 role=current_user.role,
             ):
