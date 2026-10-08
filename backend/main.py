@@ -84,6 +84,10 @@ from backend.decision_evidence import (
     build_decision_evidence,
     is_decision_question,
 )
+from backend.decision_chat import (
+    process_decision_chat,
+    should_use_decision,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -1847,7 +1851,17 @@ def chat(
 
             dataset_name = get_active_dataset_name()
 
-            if should_use_scenario(
+            if should_use_decision(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_decision_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_scenario(
                 question=body.message,
                 role=current_user.role,
             ):

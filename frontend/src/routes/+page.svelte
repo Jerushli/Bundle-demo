@@ -209,7 +209,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision';
 
     metric?: string;
 
@@ -261,7 +261,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision';
 
     metric?: string;
 
@@ -3157,7 +3157,7 @@ function getChartOptions(message: Message) {
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
 
-                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast' || message.source === 'scenario') && message.question}
+                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast' || message.source === 'scenario' || message.source === 'decision') && message.question}
                       <button
                         type="button"
                         class="explain-more-button"
@@ -3199,7 +3199,9 @@ function getChartOptions(message: Message) {
                               ? 'Based on the deterministic forecast engine, historical data, uncertainty range, and back-test diagnostics.'
                               : message.source === 'scenario'
                                 ? 'Hypothetical what-if analysis based on the current database baseline and explicit assumptions; this is not a forecast.'
-                                : 'Based only on structured evidence returned by the active dataset.'}
+                                : message.source === 'decision'
+                                  ? 'Decision-support assessment based on permitted metrics, forecast context, authorized documents, risks, and explicit limitations; management approval remains required.'
+                                  : 'Based only on structured evidence returned by the active dataset.'}
                       </div>
                     </section>
                   {/if}
