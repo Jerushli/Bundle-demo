@@ -37,3 +37,5 @@ models/
 .venv_rag/
 .env.*
 !.env.example
+
+data/uploads/
