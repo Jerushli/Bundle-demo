@@ -71,6 +71,11 @@ from backend.forecast_chat import (
     process_forecast_chat,
     should_use_forecast,
 )
+from backend.scenario_engine import (
+    get_scenario_capabilities,
+    scenario_to_dict,
+    simulate_measure_percent_change,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -294,6 +299,31 @@ class ChatRequest(BaseModel):
         "summary",
         "detailed",
     ] = "summary"
+
+
+
+class ScenarioRequest(BaseModel):
+
+    measure: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    change_percent: float = Field(
+        ge=-500,
+        le=500,
+    )
+
+    group_by: str | None = Field(
+        default=None,
+        max_length=100,
+    )
+
+    group_value: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+
 
 
 
@@ -1390,6 +1420,134 @@ def admin_get_dataset_job(
         )
 
     return job
+
+
+# ==================================================
+# SCENARIO / WHAT-IF API
+# ==================================================
+
+@app.get(
+    "/api/scenario/capabilities",
+)
+def scenario_capabilities(
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        return get_scenario_capabilities(
+            role=current_user.role
+        )
+
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+
+@app.post(
+    "/api/scenario",
+)
+def create_scenario(
+    body: ScenarioRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        result = simulate_measure_percent_change(
+            role=current_user.role,
+            measure=body.measure,
+            change_percent=(
+                body.change_percent
+            ),
+            group_by=body.group_by,
+            group_value=(
+                body.group_value
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Scenario "
+                f"{result.measure} "
+                f"{result.change_percent:+.2f}%"
+            ),
+            tool_name=(
+                "scenario_engine"
+            ),
+            status="success",
+        )
+
+        return scenario_to_dict(
+            result
+        )
+
+    except PermissionError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question="Scenario request",
+            tool_name=(
+                "scenario_engine"
+            ),
+            status="forbidden",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question="Scenario request",
+            tool_name=(
+                "scenario_engine"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
 
 
 # ==================================================
