@@ -80,6 +80,10 @@ from backend.scenario_chat import (
     process_scenario_chat,
     should_use_scenario,
 )
+from backend.decision_evidence import (
+    build_decision_evidence,
+    is_decision_question,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -303,6 +307,16 @@ class ChatRequest(BaseModel):
         "summary",
         "detailed",
     ] = "summary"
+
+
+
+class DecisionEvidenceRequest(BaseModel):
+
+    question: str = Field(
+        min_length=3,
+        max_length=2000,
+    )
+
 
 
 
@@ -1424,6 +1438,93 @@ def admin_get_dataset_job(
         )
 
     return job
+
+
+# ==================================================
+# DECISION EVIDENCE API
+# ==================================================
+
+@app.post(
+    "/api/decision/evidence",
+)
+def decision_evidence(
+    body: DecisionEvidenceRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        package = build_decision_evidence(
+            question=body.question,
+            role=current_user.role,
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                body.question
+            ),
+            tool_name=(
+                "decision_evidence"
+            ),
+            status="success",
+        )
+
+        return package
+
+    except PermissionError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                body.question
+            ),
+            tool_name=(
+                "decision_evidence"
+            ),
+            status="forbidden",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                body.question
+            ),
+            tool_name=(
+                "decision_evidence"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
 
 
 # ==================================================
