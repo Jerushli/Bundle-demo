@@ -62,6 +62,11 @@ from backend.ingestion import (
 )
 from backend.rag_chat import process_rag_chat
 from backend.hybrid_chat import process_hybrid_chat, should_use_hybrid
+from backend.forecast_engine import (
+    forecast_monthly_measure,
+    forecast_to_dict,
+    get_forecast_capabilities,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -285,6 +290,33 @@ class ChatRequest(BaseModel):
         "summary",
         "detailed",
     ] = "summary"
+
+
+
+class ForecastRequest(BaseModel):
+
+    measure: str | None = Field(
+        default=None,
+        max_length=100,
+    )
+
+    date_column: str | None = Field(
+        default=None,
+        max_length=100,
+    )
+
+    horizon_months: int = Field(
+        default=3,
+        ge=1,
+        le=12,
+    )
+
+    lookback_months: int = Field(
+        default=24,
+        ge=6,
+        le=60,
+    )
+
 
 
 
@@ -1354,6 +1386,140 @@ def admin_get_dataset_job(
         )
 
     return job
+
+
+# ==================================================
+# FORECASTING API
+# ==================================================
+
+@app.get(
+    "/api/forecast/capabilities",
+)
+def forecast_capabilities(
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        return get_forecast_capabilities(
+            role=current_user.role
+        )
+
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+
+@app.post(
+    "/api/forecast",
+)
+def create_forecast(
+    body: ForecastRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        result = forecast_monthly_measure(
+            role=current_user.role,
+            measure=body.measure,
+            date_column=(
+                body.date_column
+            ),
+            horizon_months=(
+                body.horizon_months
+            ),
+            lookback_months=(
+                body.lookback_months
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Forecast "
+                f"{result.measure} "
+                f"for {result.horizon_months} month(s)"
+            ),
+            tool_name=(
+                "forecast_engine"
+            ),
+            status="success",
+        )
+
+        return forecast_to_dict(
+            result
+        )
+
+    except PermissionError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Forecast request"
+            ),
+            tool_name=(
+                "forecast_engine"
+            ),
+            status="forbidden",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=403,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Forecast request"
+            ),
+            tool_name=(
+                "forecast_engine"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
 
 
 # ==================================================
