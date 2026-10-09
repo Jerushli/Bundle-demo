@@ -96,6 +96,12 @@ from backend.investment_chat import (
     process_investment_chat,
     should_use_investment_scenario,
 )
+from backend.business_rules import (
+    SUPPORTED_RULES,
+    business_rule_to_dict,
+    list_business_rules,
+    update_business_rule,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -319,6 +325,20 @@ class ChatRequest(BaseModel):
         "summary",
         "detailed",
     ] = "summary"
+
+
+
+class BusinessRuleUpdateRequest(BaseModel):
+
+    numeric_value: float
+
+    description: str | None = Field(
+        default=None,
+        max_length=1000,
+    )
+
+    is_active: bool = True
+
 
 
 
@@ -1505,6 +1525,94 @@ def admin_get_dataset_job(
         )
 
     return job
+
+
+# ==================================================
+# GOVERNED BUSINESS RULES API
+# ==================================================
+
+@app.get(
+    "/api/admin/business-rules",
+)
+def admin_list_business_rules(
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    return [
+        business_rule_to_dict(
+            rule
+        )
+        for rule in list_business_rules()
+    ]
+
+
+@app.put(
+    "/api/admin/business-rules/{rule_name}",
+)
+def admin_update_business_rule(
+    rule_name: str,
+    body: BusinessRuleUpdateRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    if rule_name not in SUPPORTED_RULES:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Unsupported business rule {rule_name!r}."
+            ),
+        )
+
+    try:
+        rule = update_business_rule(
+            rule_name=rule_name,
+            numeric_value=(
+                body.numeric_value
+            ),
+            updated_by=(
+                current_user.username
+            ),
+            description=(
+                body.description
+            ),
+            is_active=(
+                body.is_active
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Update business rule "
+                f"{rule_name}={body.numeric_value}"
+            ),
+            tool_name=(
+                "business_rules"
+            ),
+            status="success",
+        )
+
+        return business_rule_to_dict(
+            rule
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
 
 
 # ==================================================

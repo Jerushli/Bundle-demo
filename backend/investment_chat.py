@@ -13,6 +13,9 @@ from backend.investment_model import (
     calculate_investment_scenario,
     investment_result_to_dict,
 )
+from backend.business_rules import (
+    get_investment_policy,
+)
 
 load_dotenv(override=True)
 
@@ -252,6 +255,59 @@ def process_investment_chat(*, question: str, role: str, answer_mode: str = "sum
     hurdle = _extract_hurdle_rate(question)
     max_payback = _extract_max_payback(question)
 
+    policy = get_investment_policy()
+
+    policy_hurdle = float(
+        policy[
+            "hurdle_rate_percent"
+        ]
+    )
+
+    policy_payback = float(
+        policy[
+            "max_payback_months"
+        ]
+    )
+
+    policy_baseline = int(
+        policy[
+            "default_baseline_period_months"
+        ]
+    )
+
+    effective_baseline_period = (
+        int(
+            baseline_period
+        )
+        if baseline_period
+        is not None
+        else policy_baseline
+    )
+
+    # Users may apply stricter decision rules, but chat cannot weaken
+    # governed company policy.
+    effective_hurdle = (
+        max(
+            float(
+                hurdle
+            ),
+            policy_hurdle,
+        )
+        if hurdle is not None
+        else policy_hurdle
+    )
+
+    effective_max_payback = (
+        min(
+            float(
+                max_payback
+            ),
+            policy_payback,
+        )
+        if max_payback is not None
+        else policy_payback
+    )
+
     missing: list[str] = []
     if target_column is None or target_value is None:
         missing.append("one specific target such as region/product")
@@ -263,15 +319,23 @@ def process_investment_chat(*, question: str, role: str, answer_mode: str = "sum
         missing.append("incremental/contribution margin percentage")
     if horizon is None:
         missing.append("scenario horizon in months")
-    if baseline_period is None:
-        missing.append("baseline period in months")
-    if hurdle is None:
-        missing.append("minimum ROI / hurdle rate percentage")
-    if max_payback is None:
-        missing.append("maximum acceptable payback in months")
 
     if missing:
-        return _requirements(question, missing, answer_mode)
+        response = _requirements(
+            question,
+            missing,
+            answer_mode,
+        )
+
+        response[
+            "business_rules"
+        ] = {
+            "policy_hurdle_rate_percent": policy_hurdle,
+            "policy_max_payback_months": policy_payback,
+            "policy_default_baseline_period_months": policy_baseline,
+        }
+
+        return response
 
     result = calculate_investment_scenario(
         role=role,
@@ -281,9 +345,9 @@ def process_investment_chat(*, question: str, role: str, answer_mode: str = "sum
         expected_revenue_uplift_percent=float(uplift),
         contribution_margin_percent=float(margin),
         horizon_months=int(horizon),
-        baseline_period_months=int(baseline_period),
-        hurdle_rate_percent=float(hurdle),
-        max_payback_months=float(max_payback),
+        baseline_period_months=effective_baseline_period,
+        hurdle_rate_percent=effective_hurdle,
+        max_payback_months=effective_max_payback,
         baseline_measure=baseline_measure,
     )
 
@@ -303,5 +367,26 @@ def process_investment_chat(*, question: str, role: str, answer_mode: str = "sum
         "tool_name": "investment_model",
         "answer_mode": answer_mode,
         "investment": payload,
+        "business_rules": {
+            "policy": {
+                "hurdle_rate_percent": policy_hurdle,
+                "max_payback_months": policy_payback,
+                "default_baseline_period_months": policy_baseline,
+            },
+            "requested": {
+                "hurdle_rate_percent": hurdle,
+                "max_payback_months": max_payback,
+                "baseline_period_months": baseline_period,
+            },
+            "effective": {
+                "hurdle_rate_percent": effective_hurdle,
+                "max_payback_months": effective_max_payback,
+                "baseline_period_months": effective_baseline_period,
+            },
+            "governance_note": (
+                "Chat may make hurdle rate stricter or payback shorter, "
+                "but cannot weaken governed company policy."
+            ),
+        },
         "evidence": payload,
     }
