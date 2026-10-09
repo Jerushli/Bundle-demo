@@ -92,6 +92,10 @@ from backend.investment_model import (
     calculate_investment_scenario,
     investment_result_to_dict,
 )
+from backend.investment_chat import (
+    process_investment_chat,
+    should_use_investment_scenario,
+)
 from backend.audit import (
     list_audit_logs,
     write_audit_log,
@@ -2029,7 +2033,17 @@ def chat(
 
             dataset_name = get_active_dataset_name()
 
-            if should_use_decision(
+            if should_use_investment_scenario(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_investment_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_decision(
                 question=body.message,
                 role=current_user.role,
             ):
