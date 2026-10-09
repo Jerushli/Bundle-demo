@@ -98,9 +98,13 @@ from backend.investment_chat import (
 )
 from backend.business_rules import (
     SUPPORTED_RULES,
+    SUPPORTED_SCOPE_TYPES,
     business_rule_to_dict,
     list_business_rules,
+    list_scoped_business_rules,
+    scoped_business_rule_to_dict,
     update_business_rule,
+    update_scoped_business_rule,
 )
 from backend.audit import (
     list_audit_logs,
@@ -340,6 +344,19 @@ class BusinessRuleUpdateRequest(BaseModel):
     is_active: bool = True
 
 
+
+
+
+class ScopedBusinessRuleUpdateRequest(BaseModel):
+
+    numeric_value: float
+
+    description: str | None = Field(
+        default=None,
+        max_length=1000,
+    )
+
+    is_active: bool = True
 
 
 class InvestmentScenarioRequest(BaseModel):
@@ -1612,6 +1629,96 @@ def admin_update_business_rule(
             detail=str(
                 exc
             ),
+        ) from exc
+
+
+@app.get(
+    "/api/admin/business-rules/scoped",
+)
+def admin_list_scoped_business_rules(
+    scope_type: str | None = None,
+    scope_value: str | None = None,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    if (
+        scope_type is not None
+        and scope_type not in SUPPORTED_SCOPE_TYPES
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported scope_type {scope_type!r}.",
+        )
+
+    return [
+        scoped_business_rule_to_dict(rule)
+        for rule in list_scoped_business_rules(
+            scope_type=scope_type,
+            scope_value=scope_value,
+        )
+    ]
+
+
+@app.put(
+    "/api/admin/business-rules/scoped/"
+    "{scope_type}/{scope_value}/{rule_name}",
+)
+def admin_update_scoped_business_rule(
+    scope_type: str,
+    scope_value: str,
+    rule_name: str,
+    body: ScopedBusinessRuleUpdateRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    if scope_type not in SUPPORTED_SCOPE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported scope_type {scope_type!r}.",
+        )
+
+    if rule_name not in SUPPORTED_RULES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unsupported business rule {rule_name!r}.",
+        )
+
+    try:
+        rule = update_scoped_business_rule(
+            scope_type=scope_type,
+            scope_value=scope_value,
+            rule_name=rule_name,
+            numeric_value=body.numeric_value,
+            updated_by=current_user.username,
+            description=body.description,
+            is_active=body.is_active,
+        )
+
+        safe_write_audit_log(
+            username=current_user.username,
+            question=(
+                "Update scoped business rule "
+                f"{scope_type}={scope_value} "
+                f"{rule_name}={body.numeric_value}"
+            ),
+            tool_name="business_rules",
+            status="success",
+        )
+
+        return scoped_business_rule_to_dict(rule)
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
         ) from exc
 
 

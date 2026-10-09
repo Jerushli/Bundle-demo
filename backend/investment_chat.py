@@ -255,7 +255,10 @@ def process_investment_chat(*, question: str, role: str, answer_mode: str = "sum
     hurdle = _extract_hurdle_rate(question)
     max_payback = _extract_max_payback(question)
 
-    policy = get_investment_policy()
+    policy = get_investment_policy(
+        target_column=target_column,
+        target_value=target_value,
+    )
 
     policy_hurdle = float(
         policy[
@@ -372,6 +375,10 @@ def process_investment_chat(*, question: str, role: str, answer_mode: str = "sum
                 "hurdle_rate_percent": policy_hurdle,
                 "max_payback_months": policy_payback,
                 "default_baseline_period_months": policy_baseline,
+                "resolved_rules": policy.get(
+                    "resolved_rules",
+                    {},
+                ),
             },
             "requested": {
                 "hurdle_rate_percent": hurdle,
