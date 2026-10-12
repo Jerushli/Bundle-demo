@@ -100,6 +100,10 @@ from backend.dcf_engine import (
     calculate_dcf,
     dcf_result_to_dict,
 )
+from backend.finance_metrics import (
+    advanced_metrics_to_dict,
+    calculate_advanced_finance_metrics,
+)
 from backend.dcf_chat import (
     process_dcf_chat,
     should_use_dcf,
@@ -1767,6 +1771,105 @@ def admin_update_scoped_business_rule(
         raise HTTPException(
             status_code=400,
             detail=str(exc),
+        ) from exc
+
+
+# ==================================================
+# ADVANCED FINANCE METRICS API
+# ==================================================
+
+@app.post(
+    "/api/finance/advanced-metrics",
+)
+def finance_advanced_metrics(
+    body: DCFRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        dcf_result, metrics = (
+            calculate_advanced_finance_metrics(
+                initial_investment=(
+                    body.initial_investment
+                ),
+                periodic_cash_flow=(
+                    body.periodic_cash_flow
+                ),
+                periods=(
+                    body.periods
+                ),
+                annual_discount_rate_percent=(
+                    body.annual_discount_rate_percent
+                ),
+                period_unit=(
+                    body.period_unit
+                ),
+                working_capital_outflow=(
+                    body.working_capital_outflow
+                ),
+                working_capital_recovery=(
+                    body.working_capital_recovery
+                ),
+                terminal_value=(
+                    body.terminal_value
+                ),
+            )
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Advanced finance metrics: "
+                f"investment={body.initial_investment}, "
+                f"periods={body.periods}, "
+                f"unit={body.period_unit}"
+            ),
+            tool_name=(
+                "finance_metrics"
+            ),
+            status="success",
+        )
+
+        return {
+            "dcf": dcf_result_to_dict(
+                dcf_result
+            ),
+            "advanced_metrics": (
+                advanced_metrics_to_dict(
+                    metrics
+                )
+            ),
+        }
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Advanced finance metrics"
+            ),
+            tool_name=(
+                "finance_metrics"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
         ) from exc
 
 
