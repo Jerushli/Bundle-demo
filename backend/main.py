@@ -119,6 +119,10 @@ from backend.response_models import (
     response_estimate_to_dict,
     response_model_to_dict,
 )
+from backend.response_model_chat import (
+    process_response_model_chat,
+    should_use_response_model,
+)
 from backend.finance_chat import (
     process_advanced_finance_chat,
     should_use_advanced_finance,
@@ -2921,6 +2925,16 @@ def chat(
                 role=current_user.role,
             ):
                 result = process_dcf_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_response_model(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_response_model_chat(
                     question=body.message,
                     role=current_user.role,
                     answer_mode=body.answer_mode,
