@@ -113,15 +113,23 @@ from backend.scenario_finance_chat import (
     should_use_finance_scenario_comparison,
 )
 from backend.response_models import (
+    assess_model_governance,
     create_response_model,
     estimate_response,
+    get_response_model,
+    governance_assessment_to_dict,
     list_response_models,
     response_estimate_to_dict,
     response_model_to_dict,
+    update_response_model_governance,
 )
 from backend.response_model_chat import (
     process_response_model_chat,
     should_use_response_model,
+)
+from backend.response_investment_chat import (
+    process_response_investment_chat,
+    should_use_response_investment,
 )
 from backend.finance_chat import (
     process_advanced_finance_chat,
@@ -470,6 +478,87 @@ class ResponseModelCreateRequest(BaseModel):
         default="",
         max_length=4000,
     )
+
+    min_input_change_percent: float | None = None
+
+    max_input_change_percent: float | None = None
+
+    validated_at: date | None = None
+
+    max_age_days: int | None = Field(
+        default=None,
+        ge=1,
+    )
+
+    expires_at: date | None = None
+
+    validation_methodology: Literal[
+        "unspecified",
+        "holdout_validation",
+        "time_series_backtest",
+        "observational_statistical",
+        "quasi_experimental",
+        "randomized_experiment",
+        "econometric_causal",
+    ] = "unspecified"
+
+    causal_evidence_level: Literal[
+        "none",
+        "associational",
+        "quasi_experimental",
+        "experimental",
+    ] = "associational"
+
+    drift_status: Literal[
+        "not_checked",
+        "stable",
+        "warning",
+        "failed",
+    ] = "not_checked"
+
+    last_drift_check_at: datetime | None = None
+
+
+class ResponseModelGovernanceUpdateRequest(BaseModel):
+
+    min_input_change_percent: float | None = None
+
+    max_input_change_percent: float | None = None
+
+    validated_at: date | None = None
+
+    max_age_days: int | None = Field(
+        default=None,
+        ge=1,
+    )
+
+    expires_at: date | None = None
+
+    validation_methodology: Literal[
+        "unspecified",
+        "holdout_validation",
+        "time_series_backtest",
+        "observational_statistical",
+        "quasi_experimental",
+        "randomized_experiment",
+        "econometric_causal",
+    ] = "unspecified"
+
+    causal_evidence_level: Literal[
+        "none",
+        "associational",
+        "quasi_experimental",
+        "experimental",
+    ] = "associational"
+
+    drift_status: Literal[
+        "not_checked",
+        "stable",
+        "warning",
+        "failed",
+    ] = "not_checked"
+
+    last_drift_check_at: datetime | None = None
 
 
 class ResponseEstimateRequest(BaseModel):
@@ -2020,6 +2109,33 @@ def response_model_create(
             created_by=(
                 current_user.username
             ),
+            min_input_change_percent=(
+                body.min_input_change_percent
+            ),
+            max_input_change_percent=(
+                body.max_input_change_percent
+            ),
+            validated_at=(
+                body.validated_at
+            ),
+            max_age_days=(
+                body.max_age_days
+            ),
+            expires_at=(
+                body.expires_at
+            ),
+            validation_methodology=(
+                body.validation_methodology
+            ),
+            causal_evidence_level=(
+                body.causal_evidence_level
+            ),
+            drift_status=(
+                body.drift_status
+            ),
+            last_drift_check_at=(
+                body.last_drift_check_at
+            ),
         )
 
         safe_write_audit_log(
@@ -2041,6 +2157,118 @@ def response_model_create(
             status_code=400,
             detail=str(exc),
         ) from exc
+
+
+@app.put(
+    "/api/admin/response-models/{model_id}/governance",
+)
+def response_model_governance_update(
+    model_id: int,
+    body: ResponseModelGovernanceUpdateRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    try:
+        model = update_response_model_governance(
+            model_id=model_id,
+            min_input_change_percent=(
+                body.min_input_change_percent
+            ),
+            max_input_change_percent=(
+                body.max_input_change_percent
+            ),
+            validated_at=(
+                body.validated_at
+            ),
+            max_age_days=(
+                body.max_age_days
+            ),
+            expires_at=(
+                body.expires_at
+            ),
+            validation_methodology=(
+                body.validation_methodology
+            ),
+            causal_evidence_level=(
+                body.causal_evidence_level
+            ),
+            drift_status=(
+                body.drift_status
+            ),
+            last_drift_check_at=(
+                body.last_drift_check_at
+            ),
+            updated_by=(
+                current_user.username
+            ),
+        )
+
+        safe_write_audit_log(
+            username=current_user.username,
+            question=(
+                "Update response model governance "
+                f"{model.model_name} v{model.version}"
+            ),
+            tool_name="response_model_governance",
+            status="success",
+        )
+
+        return response_model_to_dict(
+            model
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@app.get(
+    "/api/response-models/{model_id}/governance",
+)
+def response_model_governance_status(
+    model_id: int,
+    input_change_percent: float = Query(
+        default=0,
+    ),
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    model = get_response_model(
+        model_id
+    )
+
+    if not model:
+        raise HTTPException(
+            status_code=404,
+            detail="Response model not found.",
+        )
+
+    assessment = assess_model_governance(
+        model=model,
+        input_change_percent=(
+            input_change_percent
+        ),
+    )
+
+    return {
+        "model": response_model_to_dict(
+            model
+        ),
+        "governance": governance_assessment_to_dict(
+            assessment
+        ),
+    }
 
 
 @app.post(
@@ -2925,6 +3153,16 @@ def chat(
                 role=current_user.role,
             ):
                 result = process_dcf_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_response_investment(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_response_investment_chat(
                     question=body.message,
                     role=current_user.role,
                     answer_mode=body.answer_mode,
