@@ -108,6 +108,10 @@ from backend.scenario_finance import (
     compare_cash_flow_scenarios,
     scenario_comparison_to_dict,
 )
+from backend.scenario_finance_chat import (
+    process_finance_scenario_chat,
+    should_use_finance_scenario_comparison,
+)
 from backend.finance_chat import (
     process_advanced_finance_chat,
     should_use_advanced_finance,
@@ -2628,7 +2632,17 @@ def chat(
 
             dataset_name = get_active_dataset_name()
 
-            if should_use_advanced_finance(
+            if should_use_finance_scenario_comparison(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_finance_scenario_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_advanced_finance(
                 question=body.message,
                 role=current_user.role,
             ):
