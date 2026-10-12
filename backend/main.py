@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.intelligence_router import router as intelligence_router
+from backend.normalization_router import router as normalization_router
 
 from pydantic import BaseModel, Field
 
@@ -189,6 +190,8 @@ app = FastAPI(
 )
 
 app.include_router(intelligence_router)
+
+app.include_router(normalization_router)
 
 logger = logging.getLogger(__name__)
 
