@@ -209,7 +209,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf' | 'advanced_finance';
 
     metric?: string;
 
@@ -261,7 +261,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf' | 'advanced_finance';
 
     metric?: string;
 
@@ -3157,7 +3157,7 @@ function getChartOptions(message: Message) {
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
 
-                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast' || message.source === 'scenario' || message.source === 'decision' || message.source === 'investment' || message.source === 'dcf') && message.question}
+                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast' || message.source === 'scenario' || message.source === 'decision' || message.source === 'investment' || message.source === 'dcf' || message.source === 'advanced_finance') && message.question}
                       <button
                         type="button"
                         class="explain-more-button"
@@ -3205,7 +3205,9 @@ function getChartOptions(message: Message) {
                                     ? 'Deterministic investment what-if based on the live database baseline and explicitly supplied assumptions; this is not a causal prediction.'
                                     : message.source === 'dcf'
                                       ? 'Deterministic discounted-cash-flow calculation based only on explicitly supplied finance assumptions; future cash flows are not predictions.'
-                                      : 'Based only on structured evidence returned by the active dataset.'}
+                                      : message.source === 'advanced_finance'
+                                        ? 'Deterministic NPV, IRR, profitability and payback metrics based on explicitly supplied cash-flow assumptions; these are not predictions or approval decisions.'
+                                        : 'Based only on structured evidence returned by the active dataset.'}
                       </div>
                     </section>
                   {/if}

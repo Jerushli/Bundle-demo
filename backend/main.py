@@ -104,6 +104,10 @@ from backend.finance_metrics import (
     advanced_metrics_to_dict,
     calculate_advanced_finance_metrics,
 )
+from backend.finance_chat import (
+    process_advanced_finance_chat,
+    should_use_advanced_finance,
+)
 from backend.dcf_chat import (
     process_dcf_chat,
     should_use_dcf,
@@ -2490,7 +2494,17 @@ def chat(
 
             dataset_name = get_active_dataset_name()
 
-            if should_use_dcf(
+            if should_use_advanced_finance(
+                question=body.message,
+                role=current_user.role,
+            ):
+                result = process_advanced_finance_chat(
+                    question=body.message,
+                    role=current_user.role,
+                    answer_mode=body.answer_mode,
+                )
+
+            elif should_use_dcf(
                 question=body.message,
                 role=current_user.role,
             ):
