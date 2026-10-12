@@ -104,6 +104,10 @@ from backend.finance_metrics import (
     advanced_metrics_to_dict,
     calculate_advanced_finance_metrics,
 )
+from backend.scenario_finance import (
+    compare_cash_flow_scenarios,
+    scenario_comparison_to_dict,
+)
 from backend.finance_chat import (
     process_advanced_finance_chat,
     should_use_advanced_finance,
@@ -374,6 +378,59 @@ class ScopedBusinessRuleUpdateRequest(BaseModel):
 
     is_active: bool = True
 
+
+
+
+class FinanceScenarioInput(BaseModel):
+
+    name: str = Field(
+        min_length=1,
+        max_length=120,
+    )
+
+    initial_investment: float = Field(
+        gt=0,
+    )
+
+    cash_flows: list[float] = Field(
+        min_length=1,
+        max_length=600,
+    )
+
+    working_capital_outflow: float = Field(
+        default=0,
+        ge=0,
+    )
+
+    working_capital_recovery: float = Field(
+        default=0,
+        ge=0,
+    )
+
+    terminal_value: float = Field(
+        default=0,
+        ge=0,
+    )
+
+
+class FinanceScenarioComparisonRequest(BaseModel):
+
+    annual_discount_rate_percent: float = Field(
+        ge=0,
+        le=500,
+    )
+
+    period_unit: Literal[
+        "monthly",
+        "yearly",
+    ] = "yearly"
+
+    scenarios: list[
+        FinanceScenarioInput
+    ] = Field(
+        min_length=1,
+        max_length=12,
+    )
 
 
 class DCFRequest(BaseModel):
@@ -1775,6 +1832,83 @@ def admin_update_scoped_business_rule(
         raise HTTPException(
             status_code=400,
             detail=str(exc),
+        ) from exc
+
+
+# ==================================================
+# VARIABLE CASH-FLOW SCENARIO COMPARISON API
+# ==================================================
+
+@app.post(
+    "/api/finance/scenarios/compare",
+)
+def finance_compare_scenarios(
+    body: FinanceScenarioComparisonRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        result = compare_cash_flow_scenarios(
+            scenarios=[
+                scenario.model_dump()
+                for scenario in body.scenarios
+            ],
+            annual_discount_rate_percent=(
+                body.annual_discount_rate_percent
+            ),
+            period_unit=(
+                body.period_unit
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Compare finance scenarios: "
+                + ", ".join(
+                    scenario.name
+                    for scenario in body.scenarios
+                )
+            ),
+            tool_name=(
+                "scenario_finance"
+            ),
+            status="success",
+        )
+
+        return scenario_comparison_to_dict(
+            result
+        )
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "Compare finance scenarios"
+            ),
+            tool_name=(
+                "scenario_finance"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
         ) from exc
 
 
