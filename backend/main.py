@@ -4,7 +4,7 @@ import uuid
 
 from pathlib import Path
 from time import perf_counter
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import (
@@ -111,6 +111,13 @@ from backend.scenario_finance import (
 from backend.scenario_finance_chat import (
     process_finance_scenario_chat,
     should_use_finance_scenario_comparison,
+)
+from backend.response_models import (
+    create_response_model,
+    estimate_response,
+    list_response_models,
+    response_estimate_to_dict,
+    response_model_to_dict,
 )
 from backend.finance_chat import (
     process_advanced_finance_chat,
@@ -383,6 +390,107 @@ class ScopedBusinessRuleUpdateRequest(BaseModel):
     is_active: bool = True
 
 
+
+
+
+class ResponseModelCreateRequest(BaseModel):
+
+    model_name: str = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+    input_variable: str = Field(
+        min_length=1,
+        max_length=120,
+    )
+
+    output_variable: str = Field(
+        min_length=1,
+        max_length=120,
+    )
+
+    scope_type: str | None = Field(
+        default=None,
+        max_length=80,
+    )
+
+    scope_value: str | None = Field(
+        default=None,
+        max_length=300,
+    )
+
+    model_type: Literal[
+        "elasticity",
+        "linear_percent",
+    ]
+
+    coefficient: float
+
+    intercept: float = 0
+
+    training_start: date | None = None
+
+    training_end: date | None = None
+
+    sample_size: int | None = Field(
+        default=None,
+        ge=1,
+    )
+
+    validation_metric_name: str | None = Field(
+        default=None,
+        max_length=120,
+    )
+
+    validation_metric_value: float | None = None
+
+    confidence_level: Literal[
+        "low",
+        "medium",
+        "high",
+    ]
+
+    validation_status: Literal[
+        "draft",
+        "validated",
+        "retired",
+    ] = "draft"
+
+    version: int = Field(
+        default=1,
+        ge=1,
+    )
+
+    notes: str = Field(
+        default="",
+        max_length=4000,
+    )
+
+
+class ResponseEstimateRequest(BaseModel):
+
+    input_variable: str = Field(
+        min_length=1,
+        max_length=120,
+    )
+
+    output_variable: str = Field(
+        min_length=1,
+        max_length=120,
+    )
+
+    input_change_percent: float
+
+    scope_type: str | None = Field(
+        default=None,
+        max_length=80,
+    )
+
+    scope_value: str | None = Field(
+        default=None,
+        max_length=300,
+    )
 
 
 class FinanceScenarioInput(BaseModel):
@@ -1833,6 +1941,162 @@ def admin_update_scoped_business_rule(
         return scoped_business_rule_to_dict(rule)
 
     except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+# ==================================================
+# RESPONSE / CAUSAL MODEL REGISTRY API
+# ==================================================
+
+@app.get(
+    "/api/response-models",
+)
+def response_models_list(
+    validation_status: str | None = None,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    return [
+        response_model_to_dict(
+            model
+        )
+        for model in list_response_models(
+            validation_status=validation_status,
+        )
+    ]
+
+
+@app.post(
+    "/api/admin/response-models",
+)
+def response_model_create(
+    body: ResponseModelCreateRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin"
+        )
+    ),
+):
+    try:
+        model = create_response_model(
+            model_name=body.model_name,
+            input_variable=body.input_variable,
+            output_variable=body.output_variable,
+            scope_type=body.scope_type,
+            scope_value=body.scope_value,
+            model_type=body.model_type,
+            coefficient=body.coefficient,
+            intercept=body.intercept,
+            training_start=body.training_start,
+            training_end=body.training_end,
+            sample_size=body.sample_size,
+            validation_metric_name=(
+                body.validation_metric_name
+            ),
+            validation_metric_value=(
+                body.validation_metric_value
+            ),
+            confidence_level=(
+                body.confidence_level
+            ),
+            validation_status=(
+                body.validation_status
+            ),
+            version=body.version,
+            notes=body.notes,
+            created_by=(
+                current_user.username
+            ),
+        )
+
+        safe_write_audit_log(
+            username=current_user.username,
+            question=(
+                "Create response model "
+                f"{model.model_name} v{model.version}"
+            ),
+            tool_name="response_models",
+            status="success",
+        )
+
+        return response_model_to_dict(
+            model
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post(
+    "/api/response-models/estimate",
+)
+def response_model_estimate(
+    body: ResponseEstimateRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        estimate = estimate_response(
+            input_variable=(
+                body.input_variable
+            ),
+            output_variable=(
+                body.output_variable
+            ),
+            input_change_percent=(
+                body.input_change_percent
+            ),
+            scope_type=(
+                body.scope_type
+            ),
+            scope_value=(
+                body.scope_value
+            ),
+        )
+
+        safe_write_audit_log(
+            username=current_user.username,
+            question=(
+                "Estimate response "
+                f"{body.input_variable} -> "
+                f"{body.output_variable}"
+            ),
+            tool_name="response_models",
+            status="success",
+        )
+
+        return response_estimate_to_dict(
+            estimate
+        )
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=current_user.username,
+            question=(
+                "Estimate response model"
+            ),
+            tool_name="response_models",
+            status="not_available",
+            error_message=str(exc)[:500],
+        )
+
         raise HTTPException(
             status_code=400,
             detail=str(exc),
