@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 from fastapi import (
     APIRouter,
@@ -11,6 +12,7 @@ from fastapi import (
     Query,
     Request,
 )
+from pydantic import BaseModel, Field
 
 from backend.auth import (
     AuthenticatedUser,
@@ -36,6 +38,12 @@ from backend.extraction_validator import (
     persist_validation_run,
     validate_csv_extraction,
 )
+from backend.normalization_review import (
+    decide_review_item,
+    list_review_queue,
+    persist_review_batch,
+    run_confidence_review,
+)
 
 
 router = APIRouter()
@@ -51,9 +59,24 @@ MAX_NORMALIZATION_BYTES = int(
 )
 
 
+class ReviewDecisionRequest(BaseModel):
+    decision: Literal[
+        "approved",
+        "rejected",
+    ]
+
+    reviewer_note: str | None = Field(
+        default=None,
+        max_length=1000,
+    )
+
+
 async def _save_request_csv(
     request: Request,
-) -> tuple[Path, str]:
+) -> tuple[
+    Path,
+    str,
+]:
     filename = (
         request.headers.get(
             "X-Filename"
@@ -95,11 +118,15 @@ async def _save_request_csv(
         temp.write(
             body
         )
+
         path = Path(
             temp.name
         )
 
-    return path, filename
+    return (
+        path,
+        filename,
+    )
 
 
 @router.post("/api/admin/normalization/classify")
@@ -134,7 +161,9 @@ async def classify_input_file(
             sample_rows=sample_rows,
         )
 
-        result["filename"] = filename
+        result[
+            "filename"
+        ] = filename
 
         if persist:
             result = persist_classification(
@@ -148,7 +177,9 @@ async def classify_input_file(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=str(exc),
+            detail=str(
+                exc
+            ),
         ) from exc
 
     finally:
@@ -210,7 +241,9 @@ async def analyze_input_columns(
             sample_rows=sample_rows,
         )
 
-        result["filename"] = filename
+        result[
+            "filename"
+        ] = filename
 
         if persist:
             result = persist_column_analysis(
@@ -225,7 +258,9 @@ async def analyze_input_columns(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=str(exc),
+            detail=str(
+                exc
+            ),
         ) from exc
 
     finally:
@@ -291,7 +326,9 @@ async def extract_structured_text(
             sample_rows=sample_rows,
         )
 
-        result["filename"] = filename
+        result[
+            "filename"
+        ] = filename
 
         if persist:
             result = persist_extraction_run(
@@ -306,7 +343,9 @@ async def extract_structured_text(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=str(exc),
+            detail=str(
+                exc
+            ),
         ) from exc
 
     finally:
@@ -376,7 +415,9 @@ async def validate_extraction(
             require_known_fields_only=require_known_fields_only,
         )
 
-        result["filename"] = filename
+        result[
+            "filename"
+        ] = filename
 
         if persist:
             result = persist_validation_run(
@@ -391,7 +432,9 @@ async def validate_extraction(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=str(exc),
+            detail=str(
+                exc
+            ),
         ) from exc
 
     finally:
@@ -415,3 +458,140 @@ def get_validation_runs(
     return list_validation_runs(
         limit=limit
     )
+
+
+# ==================================================
+# STAGE 22.5 — CONFIDENCE + HUMAN REVIEW
+# ==================================================
+
+@router.post("/api/admin/normalization/prepare-review")
+async def prepare_human_review(
+    request: Request,
+    dataset_name: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=100,
+    ),
+    validation_run_id: int | None = Query(
+        default=None,
+        ge=1,
+    ),
+    column: list[str] | None = Query(
+        default=None,
+    ),
+    sample_rows: int = Query(
+        default=5000,
+        ge=1,
+        le=50000,
+    ),
+    require_known_fields_only: bool = Query(
+        default=False,
+    ),
+    persist: bool = Query(
+        default=True,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    temporary_path = None
+
+    try:
+        temporary_path, filename = await _save_request_csv(
+            request
+        )
+
+        result = run_confidence_review(
+            str(
+                temporary_path
+            ),
+            columns=column,
+            sample_rows=sample_rows,
+            require_known_fields_only=require_known_fields_only,
+        )
+
+        result[
+            "filename"
+        ] = filename
+
+        if persist:
+            result = persist_review_batch(
+                result,
+                dataset_name=dataset_name,
+                validation_run_id=validation_run_id,
+                created_by=current_user.username,
+            )
+
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink(
+                missing_ok=True
+            )
+
+
+@router.get("/api/admin/normalization/review-queue")
+def get_review_queue(
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=500,
+    ),
+    status: Literal[
+        "pending",
+        "approved",
+        "rejected",
+    ] | None = None,
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    try:
+        return list_review_queue(
+            limit=limit,
+            status=status,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
+
+
+@router.post(
+    "/api/admin/normalization/review-queue/{review_id}/decision"
+)
+def decide_review(
+    review_id: int,
+    body: ReviewDecisionRequest,
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    try:
+        return decide_review_item(
+            review_id=review_id,
+            decision=body.decision,
+            reviewer=current_user.username,
+            reviewer_note=body.reviewer_note,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
+        ) from exc
