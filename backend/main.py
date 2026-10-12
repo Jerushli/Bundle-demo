@@ -96,6 +96,10 @@ from backend.investment_chat import (
     process_investment_chat,
     should_use_investment_scenario,
 )
+from backend.dcf_engine import (
+    calculate_dcf,
+    dcf_result_to_dict,
+)
 from backend.business_rules import (
     SUPPORTED_RULES,
     SUPPORTED_SCOPE_TYPES,
@@ -357,6 +361,46 @@ class ScopedBusinessRuleUpdateRequest(BaseModel):
     )
 
     is_active: bool = True
+
+
+
+class DCFRequest(BaseModel):
+
+    initial_investment: float = Field(
+        gt=0,
+    )
+
+    periodic_cash_flow: float
+
+    periods: int = Field(
+        ge=1,
+        le=600,
+    )
+
+    annual_discount_rate_percent: float = Field(
+        ge=0,
+        le=500,
+    )
+
+    period_unit: Literal[
+        "monthly",
+        "yearly",
+    ] = "yearly"
+
+    working_capital_outflow: float = Field(
+        default=0,
+        ge=0,
+    )
+
+    working_capital_recovery: float = Field(
+        default=0,
+        ge=0,
+    )
+
+    terminal_value: float = Field(
+        default=0,
+        ge=0,
+    )
 
 
 class InvestmentScenarioRequest(BaseModel):
@@ -1719,6 +1763,97 @@ def admin_update_scoped_business_rule(
         raise HTTPException(
             status_code=400,
             detail=str(exc),
+        ) from exc
+
+
+# ==================================================
+# DCF / NPV API
+# ==================================================
+
+@app.post(
+    "/api/finance/dcf",
+)
+def finance_dcf(
+    body: DCFRequest,
+    current_user:
+    AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+        )
+    ),
+):
+    try:
+        result = calculate_dcf(
+            initial_investment=(
+                body.initial_investment
+            ),
+            periodic_cash_flow=(
+                body.periodic_cash_flow
+            ),
+            periods=(
+                body.periods
+            ),
+            annual_discount_rate_percent=(
+                body.annual_discount_rate_percent
+            ),
+            period_unit=(
+                body.period_unit
+            ),
+            working_capital_outflow=(
+                body.working_capital_outflow
+            ),
+            working_capital_recovery=(
+                body.working_capital_recovery
+            ),
+            terminal_value=(
+                body.terminal_value
+            ),
+        )
+
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "DCF scenario: "
+                f"investment={body.initial_investment}, "
+                f"periods={body.periods}, "
+                f"unit={body.period_unit}, "
+                f"discount_rate={body.annual_discount_rate_percent}%"
+            ),
+            tool_name=(
+                "dcf_engine"
+            ),
+            status="success",
+        )
+
+        return dcf_result_to_dict(
+            result
+        )
+
+    except ValueError as exc:
+        safe_write_audit_log(
+            username=(
+                current_user.username
+            ),
+            question=(
+                "DCF scenario"
+            ),
+            tool_name=(
+                "dcf_engine"
+            ),
+            status="validation_error",
+            error_message=(
+                str(exc)[:500]
+            ),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                exc
+            ),
         ) from exc
 
 
