@@ -1,5 +1,6 @@
 import logging
 import os
+import tempfile
 import uuid
 
 from pathlib import Path
@@ -25,6 +26,10 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.intelligence_router import router as intelligence_router
 from backend.normalization_router import router as normalization_router
+from backend.structured_analytics_router import (
+    list_structured_routes,
+    route_structured_to_analytics,
+)
 
 from pydantic import BaseModel, Field
 
@@ -1019,7 +1024,6 @@ def me(
         username=current_user.username,
         role=current_user.role,
     )
-
 
 
 # ==================================================
@@ -3418,3 +3422,105 @@ if FRONTEND_BUILD.exists():
             FRONTEND_BUILD
             / "robots.txt"
         )
+
+
+@app.post("/api/admin/normalization/route-structured")
+async def route_normalized_structured_data(
+    request: Request,
+    dataset_name: str = Query(
+        min_length=1,
+        max_length=100,
+    ),
+    column: list[str] | None = Query(
+        default=None,
+    ),
+    sample_rows: int = Query(
+        default=5000,
+        ge=1,
+        le=50000,
+    ),
+    require_known_fields_only: bool = Query(
+        default=False,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    temporary_path = None
+
+    try:
+        temporary_path, filename = await _save_request_csv(
+            request
+        )
+
+        result = route_structured_to_analytics(
+            temporary_path,
+            dataset_name=dataset_name,
+            columns=column,
+            sample_rows=sample_rows,
+            require_known_fields_only=require_known_fields_only,
+            created_by=current_user.username,
+        )
+
+        result["source_filename"] = filename
+
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink()
+
+
+async def _save_request_csv(request: Request) -> tuple[Path, str]:
+    """Persist a CSV uploaded in a request body and return the temp path plus filename."""
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        raise ValueError("Request must be multipart/form-data with a CSV file upload.")
+
+    form = await request.form()
+    file_field = None
+
+    for key, value in form.multi_items():
+        if hasattr(value, "filename") and getattr(value, "filename", None):
+            file_field = value
+            break
+
+    if file_field is None:
+        raise ValueError("No CSV file was provided in the request.")
+
+    filename = Path(file_field.filename).name
+    if not filename.lower().endswith(".csv"):
+        raise ValueError("Uploaded file must be a CSV.")
+
+    contents = await file_field.read()
+    if not contents:
+        raise ValueError("Uploaded CSV is empty.")
+
+    temp_dir = UPLOAD_ROOT / "tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / f"{uuid.uuid4()}.csv"
+    temp_path.write_bytes(contents)
+
+    return temp_path, filename
+
+
+@app.get("/api/admin/normalization/structured-routes")
+def get_structured_routes(
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    return list_structured_routes(
+        limit=limit
+    )
