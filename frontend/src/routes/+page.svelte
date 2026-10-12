@@ -209,7 +209,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf' | 'advanced_finance' | 'finance_scenarios' | 'response_model';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf' | 'advanced_finance' | 'finance_scenarios' | 'response_model' | 'response_investment';
 
     metric?: string;
 
@@ -261,7 +261,7 @@
 
     group_by?: string;
 
-    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf' | 'advanced_finance' | 'finance_scenarios' | 'response_model';
+    source?: 'orders' | 'financials' | 'active_dataset' | 'rag_required' | 'rag' | 'hybrid' | 'forecast' | 'scenario' | 'decision' | 'investment' | 'dcf' | 'advanced_finance' | 'finance_scenarios' | 'response_model' | 'response_investment';
 
     metric?: string;
 
@@ -3157,7 +3157,7 @@ function getChartOptions(message: Message) {
                       {copyNotice === message.id ? '✓ Copied' : '⧉ Copy answer'}
                     </button>
 
-                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast' || message.source === 'scenario' || message.source === 'decision' || message.source === 'investment' || message.source === 'dcf' || message.source === 'advanced_finance' || message.source === 'finance_scenarios' || message.source === 'response_model') && message.question}
+                    {#if (message.source === 'active_dataset' || message.source === 'rag' || message.source === 'hybrid' || message.source === 'forecast' || message.source === 'scenario' || message.source === 'decision' || message.source === 'investment' || message.source === 'dcf' || message.source === 'advanced_finance' || message.source === 'finance_scenarios' || message.source === 'response_model' || message.source === 'response_investment') && message.question}
                       <button
                         type="button"
                         class="explain-more-button"
@@ -3211,7 +3211,9 @@ function getChartOptions(message: Message) {
                                           ? 'Deterministic comparison of explicitly supplied cash-flow scenarios; ranking is financial, not a probability forecast or automatic investment recommendation.'
                                           : message.source === 'response_model'
                                             ? 'Estimate from a registered validated response model with explicit provenance and scope; validation does not automatically prove causality.'
-                                            : 'Based only on structured evidence returned by the active dataset.'}
+                                            : message.source === 'response_investment'
+                                              ? 'Investment economics derived through a traceable chain from a registered response-model estimate to the live sales baseline and deterministic investment model; the modeled sales effect is not an observed or guaranteed causal outcome.'
+                                              : 'Based only on structured evidence returned by the active dataset.'}
                       </div>
                     </section>
                   {/if}

@@ -23,6 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.intelligence_router import router as intelligence_router
+
 from pydantic import BaseModel, Field
 
 from slowapi import Limiter
@@ -185,6 +187,8 @@ from backend.dataset_profiles import (
 app = FastAPI(
     title="Bundle Data Assistant"
 )
+
+app.include_router(intelligence_router)
 
 logger = logging.getLogger(__name__)
 
