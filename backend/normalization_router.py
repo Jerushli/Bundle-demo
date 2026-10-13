@@ -52,6 +52,13 @@ from backend.unstructured_rag_router import (
 )
 
 
+from backend.normalization_lineage import (
+    lineage_summary,
+    register_analytics_lineage,
+    trace_source,
+    trace_target,
+)
+
 router = APIRouter()
 
 
@@ -696,3 +703,61 @@ def get_rag_queue(
             detail=str(exc),
         ) from exc
 
+
+@router.post("/api/admin/normalization/lineage/register-analytics/{route_id}")
+def register_structured_lineage(
+    route_id: int,
+    current_user: AuthenticatedUser = Depends(require_roles("admin")),
+):
+    try:
+        return register_analytics_lineage(
+            route_id=route_id,
+            created_by=current_user.username,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/admin/normalization/lineage/source")
+def get_source_lineage(
+    dataset_name: str = Query(min_length=1, max_length=100),
+    source_row_number: int | None = Query(default=None, ge=1),
+    source_column: str | None = Query(default=None, max_length=200),
+    source_sha256: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: AuthenticatedUser = Depends(require_roles("admin")),
+):
+    return trace_source(
+        dataset_name=dataset_name,
+        source_row_number=source_row_number,
+        source_column=source_column,
+        source_sha256=source_sha256,
+        limit=limit,
+    )
+
+
+@router.get("/api/admin/normalization/lineage/target")
+def get_target_lineage(
+    target_system: Literal["analytics", "rag"],
+    target_record_key: str | None = Query(default=None, max_length=200),
+    target_locator: str | None = Query(default=None, max_length=300),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: AuthenticatedUser = Depends(require_roles("admin")),
+):
+    try:
+        return trace_target(
+            target_system=target_system,
+            target_record_key=target_record_key,
+            target_locator=target_locator,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/admin/normalization/lineage/summary")
+def get_lineage_summary(
+    dataset_name: str = Query(min_length=1, max_length=100),
+    current_user: AuthenticatedUser = Depends(require_roles("admin")),
+):
+    return lineage_summary(dataset_name=dataset_name)
