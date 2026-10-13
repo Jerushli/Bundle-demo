@@ -39,3 +39,6 @@ models/
 !.env.example
 
 data/uploads/
+
+*.jsonl
+*.ingested.json

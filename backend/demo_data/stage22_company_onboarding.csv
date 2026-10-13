@@ -1,0 +1,4 @@
+record_id,date,region,segment,manager_notes,embedded_business_data
+1,2026-10-01,South India,Enterprise,"Strong distributor demand was reported during the week, although two stores reported short stock availability.","Date: 01-10-2026, Region: South India, Product: Laptop, Sales: 250000, Profit: 45000, Note: strong demand"
+2,2026-10-02,North India,SMB,"Several customers requested revised delivery estimates after a temporary logistics delay affected selected orders.","Date: 02-10-2026, Region: North India, Product: Phone, Sales: 180000, Profit: 32000, Note: delivery delay"
+3,2026-10-03,West India,Enterprise,"Channel managers reported lower footfall while support teams handled multiple stock transfer requests.","Date: 03-10-2026, Region: West India, Product: Tablet, Sales: 120000, Profit: 22000, Note: lower footfall"

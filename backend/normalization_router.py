@@ -59,6 +59,13 @@ from backend.normalization_lineage import (
     trace_target,
 )
 
+from backend.company_onboarding_test import (
+    list_onboarding_runs,
+    persist_onboarding_test,
+    run_company_onboarding_test,
+    verify_lineage_sample,
+)
+
 router = APIRouter()
 
 
@@ -761,3 +768,103 @@ def get_lineage_summary(
     current_user: AuthenticatedUser = Depends(require_roles("admin")),
 ):
     return lineage_summary(dataset_name=dataset_name)
+
+
+@router.post("/api/admin/normalization/onboarding-test")
+async def run_onboarding_test_api(
+    request: Request,
+    dataset_name: str = Query(
+        min_length=1,
+        max_length=100,
+    ),
+    access_level: Literal[
+        "public",
+        "internal",
+        "restricted",
+    ] = Query(default="internal"),
+    sample_rows: int = Query(
+        default=5000,
+        ge=1,
+        le=50000,
+    ),
+    persist_run: bool = Query(
+        default=True,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    temporary_path = None
+
+    try:
+        temporary_path, filename = await _save_request_csv(
+            request
+        )
+
+        result = run_company_onboarding_test(
+            temporary_path,
+            dataset_name=dataset_name,
+            access_level=access_level,
+            sample_rows=sample_rows,
+            persist_rag=True,
+            write_analytics=True,
+            created_by=current_user.username,
+        )
+
+        result["filename"] = filename
+
+        if persist_run:
+            result = persist_onboarding_test(
+                result,
+                created_by=current_user.username,
+            )
+
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink(
+                missing_ok=True
+            )
+
+
+@router.get("/api/admin/normalization/onboarding-runs")
+def get_onboarding_runs(
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    return list_onboarding_runs(
+        limit=limit
+    )
+
+
+@router.get("/api/admin/normalization/onboarding-lineage-check")
+def onboarding_lineage_check(
+    dataset_name: str = Query(
+        min_length=1,
+        max_length=100,
+    ),
+    source_row_number: int = Query(
+        default=1,
+        ge=1,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    return verify_lineage_sample(
+        dataset_name=dataset_name,
+        source_row_number=source_row_number,
+    )
