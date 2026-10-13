@@ -45,6 +45,12 @@ from backend.normalization_review import (
     run_confidence_review,
 )
 
+from backend.unstructured_rag_router import (
+    collect_rag_candidates,
+    list_rag_queue,
+    persist_rag_route,
+)
+
 
 router = APIRouter()
 
@@ -595,3 +601,98 @@ def decide_review(
                 exc
             ),
         ) from exc
+
+
+@router.post("/api/admin/normalization/route-rag")
+async def route_unstructured_to_rag(
+    request: Request,
+    dataset_name: str = Query(
+        min_length=1,
+        max_length=100,
+    ),
+    access_level: Literal[
+        "public",
+        "internal",
+        "restricted",
+    ] = Query(default="internal"),
+    sample_rows: int = Query(
+        default=5000,
+        ge=1,
+        le=50000,
+    ),
+    include_embedded_structure: bool = Query(
+        default=False,
+    ),
+    persist: bool = Query(
+        default=True,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    temporary_path = None
+
+    try:
+        temporary_path, filename = await _save_request_csv(
+            request
+        )
+
+        result = collect_rag_candidates(
+            temporary_path,
+            dataset_name=dataset_name,
+            access_level=access_level,
+            sample_rows=sample_rows,
+            include_embedded_structure=include_embedded_structure,
+        )
+
+        result["filename"] = filename
+
+        if persist:
+            result = persist_rag_route(
+                result,
+                created_by=current_user.username,
+            )
+
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink(
+                missing_ok=True
+            )
+
+
+@router.get("/api/admin/normalization/rag-queue")
+def get_rag_queue(
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=1000,
+    ),
+    status: Literal[
+        "pending_export",
+        "exported",
+        "ingested",
+        "failed",
+    ] | None = None,
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    try:
+        return list_rag_queue(
+            limit=limit,
+            status=status,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
