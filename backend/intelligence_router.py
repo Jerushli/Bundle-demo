@@ -28,6 +28,14 @@ from backend.daily_intelligence_brief import (
     generate_daily_brief,
     get_daily_briefs,
 )
+from backend.daily_intelligence_job import (
+    list_daily_runs,
+    run_daily_intelligence,
+)
+from backend.intelligence_alerts import (
+    acknowledge_alert,
+    list_alerts,
+)
 
 
 router = APIRouter()
@@ -86,6 +94,11 @@ class EvidenceRequest(BaseModel):
 
 class BriefRequest(BaseModel):
     persist: bool = True
+
+
+class DailyRunRequest(BaseModel):
+    run_date: date | None = None
+    force: bool = False
 
 
 @router.get("/api/intelligence/columns")
@@ -165,7 +178,7 @@ def admin_generate_intelligence_snapshot(
         return generate_daily_snapshot(
             snapshot_date=(
                 body.snapshot_date
-                if body is not None
+                if body
                 else None
             )
         )
@@ -259,7 +272,7 @@ def admin_detect_intelligence_changes(
         return detect_latest_changes(
             persist=(
                 body.persist
-                if body is not None
+                if body
                 else True
             )
         )
@@ -319,7 +332,7 @@ def create_intelligence_evidence(
             role=current_user.role,
             persist=(
                 body.persist
-                if body is not None
+                if body
                 else True
             ),
         )
@@ -357,10 +370,6 @@ def list_intelligence_evidence(
         ) from exc
 
 
-# ==================================================
-# STAGE 21.4 — NATURAL-LANGUAGE DAILY BRIEF
-# ==================================================
-
 @router.post("/api/intelligence/daily-brief")
 def create_daily_intelligence_brief(
     body: BriefRequest | None = None,
@@ -377,7 +386,7 @@ def create_daily_intelligence_brief(
             role=current_user.role,
             persist=(
                 body.persist
-                if body is not None
+                if body
                 else True
             ),
         )
@@ -411,5 +420,113 @@ def list_daily_intelligence_briefs(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+# ==================================================
+# STAGE 21.5 — SCHEDULED DAILY JOB / ALERTS
+# ==================================================
+
+@router.post("/api/admin/intelligence/run-daily")
+def admin_run_daily_intelligence(
+    body: DailyRunRequest | None = None,
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    try:
+        return run_daily_intelligence(
+            role_name="admin",
+            run_date=(
+                body.run_date
+                if body
+                else None
+            ),
+            force=(
+                body.force
+                if body
+                else False
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/api/admin/intelligence/runs")
+def admin_list_daily_intelligence_runs(
+    limit: int = Query(
+        30,
+        ge=1,
+        le=200,
+    ),
+    current_user: AuthenticatedUser = Depends(
+        require_roles("admin")
+    ),
+):
+    return list_daily_runs(
+        limit=limit
+    )
+
+
+@router.get("/api/intelligence/alerts")
+def intelligence_alerts(
+    limit: int = Query(
+        100,
+        ge=1,
+        le=500,
+    ),
+    severity: Literal[
+        "warning",
+        "critical",
+    ] | None = None,
+    acknowledged: bool | None = None,
+    current_user: AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+            "viewer",
+        )
+    ),
+):
+    try:
+        return list_alerts(
+            role_name=current_user.role,
+            limit=limit,
+            severity=severity,
+            acknowledged=acknowledged,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/api/intelligence/alerts/{alert_id}/acknowledge"
+)
+def acknowledge_intelligence_alert(
+    alert_id: int,
+    current_user: AuthenticatedUser = Depends(
+        require_roles(
+            "admin",
+            "analyst",
+            "viewer",
+        )
+    ),
+):
+    try:
+        return acknowledge_alert(
+            alert_id=alert_id,
+            role_name=current_user.role,
+            username=current_user.username,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
             detail=str(exc),
         ) from exc
