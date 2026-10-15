@@ -256,9 +256,7 @@ def _validate_explanation(
 
     lowered = text.lower()
 
-    for pattern in (
-        FORBIDDEN_CAUSAL_PATTERNS
-    ):
+    for pattern in FORBIDDEN_CAUSAL_PATTERNS:
         if re.search(
             pattern,
             lowered,
@@ -268,9 +266,7 @@ def _validate_explanation(
             )
             break
 
-    for pattern in (
-        FORBIDDEN_AUTONOMOUS_PATTERNS
-    ):
+    for pattern in FORBIDDEN_AUTONOMOUS_PATTERNS:
         if re.search(
             pattern,
             lowered,
@@ -299,13 +295,29 @@ def _validate_explanation(
     return problems
 
 
+def _normalize_text(
+    text: str,
+) -> str:
+    value = text.lower()
+
+    value = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        value,
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        value,
+    ).strip()
+
+
 def _normalize_note_for_dedup(
     sentence: str,
 ) -> str:
     normalized = sentence.lower()
 
-    # Remove common event-status boilerplate so notes that are
-    # operationally identical are treated as duplicates.
     boilerplate_patterns = (
         r"\bthe sla target was missed for this service event\.?\s*",
         r"\bthis service event missed the sla target\.?\s*",
@@ -320,19 +332,9 @@ def _normalize_note_for_dedup(
             flags=re.IGNORECASE,
         )
 
-    normalized = re.sub(
-        r"[^a-z0-9\s]",
-        " ",
-        normalized,
+    return _normalize_text(
+        normalized
     )
-
-    normalized = re.sub(
-        r"\s+",
-        " ",
-        normalized,
-    ).strip()
-
-    return normalized
 
 
 def _token_similarity(
@@ -370,10 +372,91 @@ def _token_similarity(
     )
 
 
+def _split_note_clauses(
+    note: str,
+) -> list[str]:
+    # Manager notes are mostly full sentences. Split on sentence
+    # boundaries while preserving the original text.
+    raw = re.split(
+        r"(?<=[.!?])\s+",
+        note.strip(),
+    )
+
+    clauses = [
+        item.strip()
+        for item in raw
+        if item.strip()
+    ]
+
+    return clauses
+
+
+def _dedupe_clauses_across_notes(
+    notes: list[str],
+    *,
+    max_clauses: int = 4,
+) -> list[str]:
+    output: list[str] = []
+    normalized_output: list[str] = []
+
+    for note in notes:
+        for clause in _split_note_clauses(
+            note
+        ):
+            normalized = (
+                _normalize_note_for_dedup(
+                    clause
+                )
+            )
+
+            if not normalized:
+                continue
+
+            duplicate = False
+
+            for existing in normalized_output:
+                if normalized == existing:
+                    duplicate = True
+                    break
+
+                if (
+                    normalized in existing
+                    or existing in normalized
+                ):
+                    duplicate = True
+                    break
+
+                if (
+                    _token_similarity(
+                        normalized,
+                        existing,
+                    )
+                    >= 0.78
+                ):
+                    duplicate = True
+                    break
+
+            if duplicate:
+                continue
+
+            normalized_output.append(
+                normalized
+            )
+
+            output.append(
+                clause
+            )
+
+            if len(output) >= max_clauses:
+                return output
+
+    return output
+
+
 def _extract_unique_manager_notes(
     evidence: dict[str, Any],
     *,
-    limit: int = 3,
+    limit: int = 5,
 ) -> list[str]:
     notes: list[str] = []
     normalized_notes: list[str] = []
@@ -468,19 +551,26 @@ def _fallback_explanation(
     notes = (
         _extract_unique_manager_notes(
             evidence,
-            limit=3,
+            limit=5,
         )
     )
 
-    if notes:
-        bullet_text = " ".join(
-            f"Related observation: {note}"
-            for note in notes
+    clauses = (
+        _dedupe_clauses_across_notes(
+            notes,
+            max_clauses=4,
+        )
+    )
+
+    if clauses:
+        observation_text = " ".join(
+            f"Related observation: {clause}"
+            for clause in clauses
         )
 
         return (
             f"{structured_fact} "
-            f"{bullet_text} "
+            f"{observation_text} "
             "These observations are contextual associations only. "
             "They do not change the structured result and do not "
             "prove causation."
@@ -624,6 +714,7 @@ Return only the explanation text.
             "numeric_words_allowed_in_llm_explanation": False,
             "semantic_numeric_leakage_blocked": True,
             "fallback_semantic_deduplication": True,
+            "fallback_clause_deduplication": True,
             "validation_passed": (
                 not validation_problems
             ),
