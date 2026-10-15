@@ -50,8 +50,6 @@ FORBIDDEN_AUTONOMOUS_PATTERNS = (
     r"\bmust change\b",
 )
 
-# Cardinal / quantitative words that can restate numeric facts without digits.
-# Keep vague words such as "several", "many", "few", and "some" allowed.
 NUMERIC_WORD_PATTERN = re.compile(
     r"\b("
     r"zero|one|two|three|four|five|six|seven|eight|nine|ten|"
@@ -301,13 +299,84 @@ def _validate_explanation(
     return problems
 
 
+def _normalize_note_for_dedup(
+    sentence: str,
+) -> str:
+    normalized = sentence.lower()
+
+    # Remove common event-status boilerplate so notes that are
+    # operationally identical are treated as duplicates.
+    boilerplate_patterns = (
+        r"\bthe sla target was missed for this service event\.?\s*",
+        r"\bthis service event missed the sla target\.?\s*",
+        r"\bfor this service event\b",
+    )
+
+    for pattern in boilerplate_patterns:
+        normalized = re.sub(
+            pattern,
+            " ",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+
+    normalized = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        normalized,
+    )
+
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        normalized,
+    ).strip()
+
+    return normalized
+
+
+def _token_similarity(
+    left: str,
+    right: str,
+) -> float:
+    left_tokens = set(
+        left.split()
+    )
+
+    right_tokens = set(
+        right.split()
+    )
+
+    if (
+        not left_tokens
+        or not right_tokens
+    ):
+        return 0.0
+
+    intersection = len(
+        left_tokens
+        & right_tokens
+    )
+
+    union = len(
+        left_tokens
+        | right_tokens
+    )
+
+    return (
+        intersection / union
+        if union
+        else 0.0
+    )
+
+
 def _extract_unique_manager_notes(
     evidence: dict[str, Any],
     *,
     limit: int = 3,
 ) -> list[str]:
     notes: list[str] = []
-    seen: set[str] = set()
+    normalized_notes: list[str] = []
 
     for row in evidence.get(
         "rag_evidence",
@@ -334,19 +403,46 @@ def _extract_unique_manager_notes(
             .strip()
         )
 
-        normalized = re.sub(
-            r"\s+",
-            " ",
-            sentence.lower(),
-        )
-
-        if (
-            not sentence
-            or normalized in seen
-        ):
+        if not sentence:
             continue
 
-        seen.add(
+        normalized = (
+            _normalize_note_for_dedup(
+                sentence
+            )
+        )
+
+        if not normalized:
+            continue
+
+        duplicate = False
+
+        for existing in normalized_notes:
+            if normalized == existing:
+                duplicate = True
+                break
+
+            if (
+                normalized in existing
+                or existing in normalized
+            ):
+                duplicate = True
+                break
+
+            if (
+                _token_similarity(
+                    normalized,
+                    existing,
+                )
+                >= 0.72
+            ):
+                duplicate = True
+                break
+
+        if duplicate:
+            continue
+
+        normalized_notes.append(
             normalized
         )
 
@@ -377,14 +473,14 @@ def _fallback_explanation(
     )
 
     if notes:
-        note_text = " ".join(
-            notes
+        bullet_text = " ".join(
+            f"Related observation: {note}"
+            for note in notes
         )
 
         return (
             f"{structured_fact} "
-            "Retrieved operational notes include related observations: "
-            f"{note_text} "
+            f"{bullet_text} "
             "These observations are contextual associations only. "
             "They do not change the structured result and do not "
             "prove causation."
@@ -439,6 +535,7 @@ Rules:
 - Use wording such as "associated with", "appears in the retrieved notes",
   "related observation", or "may warrant investigation".
 - Do not recommend autonomous business actions.
+- Avoid repeating the same operational observation more than once.
 - Keep the explanation concise and useful.
 - PostgreSQL is the source of numeric truth.
 - RAG evidence must never override SQL facts.
@@ -526,6 +623,7 @@ Return only the explanation text.
             "numeric_text_allowed_in_llm_explanation": False,
             "numeric_words_allowed_in_llm_explanation": False,
             "semantic_numeric_leakage_blocked": True,
+            "fallback_semantic_deduplication": True,
             "validation_passed": (
                 not validation_problems
             ),
