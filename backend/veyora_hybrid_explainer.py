@@ -18,14 +18,8 @@ from backend.veyora_hybrid_evidence import (
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 
-load_dotenv(
-    PROJECT_ROOT / ".env",
-    override=False,
-)
-load_dotenv(
-    BASE_DIR / ".env",
-    override=False,
-)
+load_dotenv(PROJECT_ROOT / ".env", override=False)
+load_dotenv(BASE_DIR / ".env", override=False)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv(
@@ -67,7 +61,6 @@ def _client() -> Groq:
         raise RuntimeError(
             "GROQ_API_KEY is missing from the project environment."
         )
-
     return Groq(
         api_key=GROQ_API_KEY.strip(),
         timeout=30.0,
@@ -77,38 +70,20 @@ def _client() -> Groq:
 def _structured_fact_sentence(
     evidence: dict[str, Any],
 ) -> str:
-    structured = evidence.get(
-        "structured_evidence",
-        {},
-    )
-
-    operation = structured.get(
-        "operation"
-    )
+    structured = evidence.get("structured_evidence", {})
+    operation = structured.get("operation")
 
     if operation == "group_ranking":
-        rows = structured.get(
-            "rows",
-            [],
-        )
-
-        metric = structured.get(
-            "metric"
-        )
-
-        group_by = structured.get(
-            "group_by"
-        )
+        rows = structured.get("rows", [])
+        metric = structured.get("metric")
+        group_by = structured.get("group_by")
 
         if (
             rows
             and metric == "downtime_hours"
             and group_by == "region"
         ):
-            top_region = rows[0].get(
-                "group_name"
-            )
-
+            top_region = rows[0].get("group_name")
             if top_region:
                 return (
                     "Structured data ranks "
@@ -138,50 +113,24 @@ def _structured_fact_sentence(
 def _safe_evidence_for_llm(
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
-    structured = evidence.get(
-        "structured_evidence",
-        {},
-    )
-
-    rag_rows = evidence.get(
-        "rag_evidence",
-        [],
-    )
-
     return {
-        "question": evidence.get(
-            "question"
-        ),
-        "structured_fact": (
-            _structured_fact_sentence(
-                evidence
-            )
-        ),
-        "structured_evidence": (
-            structured
+        "question": evidence.get("question"),
+        "structured_fact": _structured_fact_sentence(evidence),
+        "structured_evidence": evidence.get(
+            "structured_evidence",
+            {},
         ),
         "rag_evidence": [
             {
-                "title": row.get(
-                    "title"
-                ),
-                "body": row.get(
-                    "body"
-                ),
-                "similarity": row.get(
-                    "similarity"
-                ),
+                "title": row.get("title"),
+                "body": row.get("body"),
+                "similarity": row.get("similarity"),
             }
-            for row in rag_rows
+            for row in evidence.get("rag_evidence", [])
         ],
-        "guardrails": evidence.get(
-            "guardrails",
-            {},
-        ),
-        "interpretation_rule": (
-            evidence.get(
-                "interpretation_rule"
-            )
+        "guardrails": evidence.get("guardrails", {}),
+        "interpretation_rule": evidence.get(
+            "interpretation_rule"
         ),
     }
 
@@ -189,46 +138,21 @@ def _safe_evidence_for_llm(
 def _extract_structured_top_region(
     evidence: dict[str, Any],
 ) -> str | None:
-    structured = evidence.get(
-        "structured_evidence",
-        {},
-    )
+    structured = evidence.get("structured_evidence", {})
 
-    if (
-        structured.get("operation")
-        != "group_ranking"
-    ):
+    if structured.get("operation") != "group_ranking":
+        return None
+    if structured.get("metric") != "downtime_hours":
+        return None
+    if structured.get("group_by") != "region":
         return None
 
-    if (
-        structured.get("metric")
-        != "downtime_hours"
-    ):
-        return None
-
-    if (
-        structured.get("group_by")
-        != "region"
-    ):
-        return None
-
-    rows = structured.get(
-        "rows",
-        [],
-    )
-
+    rows = structured.get("rows", [])
     if not rows:
         return None
 
-    value = rows[0].get(
-        "group_name"
-    )
-
-    return (
-        str(value)
-        if value
-        else None
-    )
+    value = rows[0].get("group_name")
+    return str(value) if value else None
 
 
 def _validate_explanation(
@@ -238,17 +162,12 @@ def _validate_explanation(
 ) -> list[str]:
     problems: list[str] = []
 
-    if re.search(
-        r"\d",
-        text,
-    ):
+    if re.search(r"\d", text):
         problems.append(
             "The qualitative explanation contained numeric characters."
         )
 
-    if NUMERIC_WORD_PATTERN.search(
-        text
-    ):
+    if NUMERIC_WORD_PATTERN.search(text):
         problems.append(
             "The qualitative explanation restated numeric information "
             "using number words."
@@ -257,37 +176,22 @@ def _validate_explanation(
     lowered = text.lower()
 
     for pattern in FORBIDDEN_CAUSAL_PATTERNS:
-        if re.search(
-            pattern,
-            lowered,
-        ):
+        if re.search(pattern, lowered):
             problems.append(
                 "The explanation used unsupported causal language."
             )
             break
 
     for pattern in FORBIDDEN_AUTONOMOUS_PATTERNS:
-        if re.search(
-            pattern,
-            lowered,
-        ):
+        if re.search(pattern, lowered):
             problems.append(
                 "The explanation used autonomous action language."
             )
             break
 
     if evidence:
-        top_region = (
-            _extract_structured_top_region(
-                evidence
-            )
-        )
-
-        if (
-            top_region
-            and top_region.lower()
-            not in lowered
-        ):
+        top_region = _extract_structured_top_region(evidence)
+        if top_region and top_region.lower() not in lowered:
             problems.append(
                 "The explanation omitted the structured top-region fact."
             )
@@ -295,27 +199,13 @@ def _validate_explanation(
     return problems
 
 
-def _normalize_text(
-    text: str,
-) -> str:
+def _normalize_text(text: str) -> str:
     value = text.lower()
-
-    value = re.sub(
-        r"[^a-z0-9\s]",
-        " ",
-        value,
-    )
-
-    return re.sub(
-        r"\s+",
-        " ",
-        value,
-    ).strip()
+    value = re.sub(r"[^a-z0-9\s]", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
-def _normalize_note_for_dedup(
-    sentence: str,
-) -> str:
+def _normalize_note_for_dedup(sentence: str) -> str:
     normalized = sentence.lower()
 
     boilerplate_patterns = (
@@ -332,63 +222,32 @@ def _normalize_note_for_dedup(
             flags=re.IGNORECASE,
         )
 
-    return _normalize_text(
-        normalized
-    )
+    return _normalize_text(normalized)
 
 
-def _token_similarity(
-    left: str,
-    right: str,
-) -> float:
-    left_tokens = set(
-        left.split()
-    )
+def _token_similarity(left: str, right: str) -> float:
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
 
-    right_tokens = set(
-        right.split()
-    )
-
-    if (
-        not left_tokens
-        or not right_tokens
-    ):
+    if not left_tokens or not right_tokens:
         return 0.0
 
-    intersection = len(
-        left_tokens
-        & right_tokens
-    )
+    intersection = len(left_tokens & right_tokens)
+    union = len(left_tokens | right_tokens)
 
-    union = len(
-        left_tokens
-        | right_tokens
-    )
-
-    return (
-        intersection / union
-        if union
-        else 0.0
-    )
+    return intersection / union if union else 0.0
 
 
-def _split_note_clauses(
-    note: str,
-) -> list[str]:
-    # Manager notes are mostly full sentences. Split on sentence
-    # boundaries while preserving the original text.
+def _split_note_clauses(note: str) -> list[str]:
     raw = re.split(
         r"(?<=[.!?])\s+",
         note.strip(),
     )
-
-    clauses = [
+    return [
         item.strip()
         for item in raw
         if item.strip()
     ]
-
-    return clauses
 
 
 def _dedupe_clauses_across_notes(
@@ -400,14 +259,8 @@ def _dedupe_clauses_across_notes(
     normalized_output: list[str] = []
 
     for note in notes:
-        for clause in _split_note_clauses(
-            note
-        ):
-            normalized = (
-                _normalize_note_for_dedup(
-                    clause
-                )
-            )
+        for clause in _split_note_clauses(note):
+            normalized = _normalize_note_for_dedup(clause)
 
             if not normalized:
                 continue
@@ -419,33 +272,22 @@ def _dedupe_clauses_across_notes(
                     duplicate = True
                     break
 
-                if (
-                    normalized in existing
-                    or existing in normalized
-                ):
+                if normalized in existing or existing in normalized:
                     duplicate = True
                     break
 
-                if (
-                    _token_similarity(
-                        normalized,
-                        existing,
-                    )
-                    >= 0.78
-                ):
+                if _token_similarity(
+                    normalized,
+                    existing,
+                ) >= 0.78:
                     duplicate = True
                     break
 
             if duplicate:
                 continue
 
-            normalized_output.append(
-                normalized
-            )
-
-            output.append(
-                clause
-            )
+            normalized_output.append(normalized)
+            output.append(clause)
 
             if len(output) >= max_clauses:
                 return output
@@ -461,16 +303,8 @@ def _extract_unique_manager_notes(
     notes: list[str] = []
     normalized_notes: list[str] = []
 
-    for row in evidence.get(
-        "rag_evidence",
-        [],
-    ):
-        body = str(
-            row.get(
-                "body",
-                "",
-            )
-        )
+    for row in evidence.get("rag_evidence", []):
+        body = str(row.get("body", ""))
 
         match = re.search(
             r"Manager note:\s*(.+?)(?:\n|$)",
@@ -481,20 +315,11 @@ def _extract_unique_manager_notes(
         if not match:
             continue
 
-        sentence = (
-            match.group(1)
-            .strip()
-        )
-
+        sentence = match.group(1).strip()
         if not sentence:
             continue
 
-        normalized = (
-            _normalize_note_for_dedup(
-                sentence
-            )
-        )
-
+        normalized = _normalize_note_for_dedup(sentence)
         if not normalized:
             continue
 
@@ -505,33 +330,22 @@ def _extract_unique_manager_notes(
                 duplicate = True
                 break
 
-            if (
-                normalized in existing
-                or existing in normalized
-            ):
+            if normalized in existing or existing in normalized:
                 duplicate = True
                 break
 
-            if (
-                _token_similarity(
-                    normalized,
-                    existing,
-                )
-                >= 0.72
-            ):
+            if _token_similarity(
+                normalized,
+                existing,
+            ) >= 0.72:
                 duplicate = True
                 break
 
         if duplicate:
             continue
 
-        normalized_notes.append(
-            normalized
-        )
-
-        notes.append(
-            sentence
-        )
+        normalized_notes.append(normalized)
+        notes.append(sentence)
 
         if len(notes) >= limit:
             break
@@ -542,24 +356,16 @@ def _extract_unique_manager_notes(
 def _fallback_explanation(
     evidence: dict[str, Any],
 ) -> str:
-    structured_fact = (
-        _structured_fact_sentence(
-            evidence
-        )
+    structured_fact = _structured_fact_sentence(evidence)
+
+    notes = _extract_unique_manager_notes(
+        evidence,
+        limit=5,
     )
 
-    notes = (
-        _extract_unique_manager_notes(
-            evidence,
-            limit=5,
-        )
-    )
-
-    clauses = (
-        _dedupe_clauses_across_notes(
-            notes,
-            max_clauses=4,
-        )
+    clauses = _dedupe_clauses_across_notes(
+        notes,
+        max_clauses=4,
     )
 
     if clauses:
@@ -584,6 +390,17 @@ def _fallback_explanation(
     )
 
 
+def _validate_final_answer(
+    text: str,
+    *,
+    evidence: dict[str, Any],
+) -> list[str]:
+    return _validate_explanation(
+        text,
+        evidence=evidence,
+    )
+
+
 def explain_hybrid_evidence(
     question: str,
     *,
@@ -596,11 +413,7 @@ def explain_hybrid_evidence(
         role=role,
     )
 
-    llm_input = (
-        _safe_evidence_for_llm(
-            evidence
-        )
-    )
+    llm_input = _safe_evidence_for_llm(evidence)
 
     system_prompt = """
 You are Bundle Data Assistant's grounded explanation layer.
@@ -664,7 +477,7 @@ Return only the explanation text.
         )
     )
 
-    explanation = (
+    llm_explanation = (
         response
         .choices[0]
         .message
@@ -672,25 +485,29 @@ Return only the explanation text.
         or ""
     ).strip()
 
-    validation_problems = (
-        _validate_explanation(
-            explanation,
-            evidence=evidence,
-        )
+    llm_validation_problems = _validate_explanation(
+        llm_explanation,
+        evidence=evidence,
     )
 
     used_fallback = False
+    final_answer = llm_explanation
 
     if (
-        not explanation
-        or validation_problems
+        not llm_explanation
+        or llm_validation_problems
     ):
-        explanation = (
-            _fallback_explanation(
-                evidence
-            )
+        final_answer = _fallback_explanation(
+            evidence
         )
         used_fallback = True
+
+    # Important: validate the actual answer that will be returned,
+    # not only the original LLM candidate.
+    final_validation_problems = _validate_final_answer(
+        final_answer,
+        evidence=evidence,
+    )
 
     return {
         "source": (
@@ -699,7 +516,7 @@ Return only the explanation text.
         "dataset_name": dataset_name,
         "role": role,
         "question": question,
-        "answer": explanation,
+        "answer": final_answer,
         "evidence": evidence,
         "explanation_guardrails": {
             "llm_provider": "Groq",
@@ -715,12 +532,30 @@ Return only the explanation text.
             "semantic_numeric_leakage_blocked": True,
             "fallback_semantic_deduplication": True,
             "fallback_clause_deduplication": True,
-            "validation_passed": (
-                not validation_problems
-            ),
             "fallback_used": used_fallback,
+
+            # New explicit status fields.
+            "llm_candidate_validation_passed": (
+                bool(llm_explanation)
+                and not llm_validation_problems
+            ),
+            "llm_candidate_validation_problems": (
+                llm_validation_problems
+            ),
+            "final_answer_validation_passed": (
+                not final_validation_problems
+            ),
+            "final_answer_validation_problems": (
+                final_validation_problems
+            ),
+
+            # Backwards-compatible field now describes the
+            # ACTUAL returned answer.
+            "validation_passed": (
+                not final_validation_problems
+            ),
             "validation_problems": (
-                validation_problems
+                final_validation_problems
             ),
         },
     }
@@ -729,9 +564,7 @@ Return only the explanation text.
 def main() -> None:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "question"
-    )
+    parser.add_argument("question")
 
     parser.add_argument(
         "--dataset-name",
