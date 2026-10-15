@@ -42,6 +42,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from backend.ai import process_chat
+from backend.veyora_chat_router import maybe_process_veyora_chat
 from backend.dataset_ai import process_dataset_chat
 from backend.dataset_profiles import (
     get_active_dataset_name,
@@ -3127,7 +3128,14 @@ def chat(
             "dataset",
         ).strip().lower()
 
-        if chat_mode == "legacy":
+        veyora_result = maybe_process_veyora_chat(
+            body.message,
+            role=current_user.role,
+        )
+
+        if veyora_result is not None:
+            result = veyora_result
+        elif chat_mode == "legacy":
             result = process_chat(
                 body.message,
                 history=chat_history,
