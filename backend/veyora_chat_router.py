@@ -8,7 +8,12 @@ from backend.veyora_hybrid_explainer import explain_hybrid_evidence
 
 _ALLOWED_ROLES = {"admin", "analyst"}
 
-_REGION_WORDS = ("north", "south", "east", "west")
+_REGION_WORDS = (
+    "north",
+    "south",
+    "east",
+    "west",
+)
 
 _OPERATIONAL_TERMS = (
     "downtime",
@@ -34,16 +39,25 @@ _EXPLANATION_TERMS = (
     "problem",
     "problems",
     "investigate",
+    "associated",
+    "association",
+    "related",
+    "relationship",
+    "linked",
 )
 
 
-def should_route_veyora_hybrid(question: str) -> bool:
+def should_route_veyora_hybrid(
+    question: str,
+) -> bool:
     text = question.strip().lower()
 
     if not text:
         return False
 
-    explicit_veyora = "veyora" in text
+    explicit_veyora = (
+        "veyora" in text
+    )
 
     has_operational_term = any(
         term in text
@@ -66,6 +80,7 @@ def should_route_veyora_hybrid(question: str) -> bool:
         for region in _REGION_WORDS
     )
 
+    # Explicit Veyora operational/investigation questions.
     if (
         explicit_veyora
         and (
@@ -75,12 +90,21 @@ def should_route_veyora_hybrid(question: str) -> bool:
     ):
         return True
 
+    # Hybrid operational explanation / association questions.
     if (
         has_operational_term
         and has_explanation_intent
     ):
         return True
 
+    # Direct supplier/SLA association phrasing.
+    if (
+        "supplier" in text
+        and "sla" in text
+    ):
+        return True
+
+    # Narrow regional downtime path.
     if (
         has_region
         and "downtime" in text
@@ -98,7 +122,9 @@ def maybe_process_veyora_chat(
     if role not in _ALLOWED_ROLES:
         return None
 
-    if not should_route_veyora_hybrid(question):
+    if not should_route_veyora_hybrid(
+        question
+    ):
         return None
 
     result = explain_hybrid_evidence(
@@ -107,7 +133,12 @@ def maybe_process_veyora_chat(
         role=role,
     )
 
-    result["tool_name"] = "veyora_hybrid_intelligence"
-    result["chat_route"] = "veyora_hybrid"
+    result["tool_name"] = (
+        "veyora_hybrid_intelligence"
+    )
+
+    result["chat_route"] = (
+        "veyora_hybrid"
+    )
 
     return result
