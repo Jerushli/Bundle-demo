@@ -50,6 +50,19 @@ FORBIDDEN_AUTONOMOUS_PATTERNS = (
     r"\bmust change\b",
 )
 
+# Cardinal / quantitative words that can restate numeric facts without digits.
+# Keep vague words such as "several", "many", "few", and "some" allowed.
+NUMERIC_WORD_PATTERN = re.compile(
+    r"\b("
+    r"zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|"
+    r"eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|"
+    r"eighty|ninety|hundred|thousand|million|billion|"
+    r"percent|percentage|half|quarter|third|double|triple"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
 
 def _client() -> Groq:
     if not GROQ_API_KEY:
@@ -235,6 +248,14 @@ def _validate_explanation(
             "The qualitative explanation contained numeric characters."
         )
 
+    if NUMERIC_WORD_PATTERN.search(
+        text
+    ):
+        problems.append(
+            "The qualitative explanation restated numeric information "
+            "using number words."
+        )
+
     lowered = text.lower()
 
     for pattern in (
@@ -362,10 +383,10 @@ def _fallback_explanation(
 
         return (
             f"{structured_fact} "
-            "Retrieved operational notes include the following "
-            f"related observations: {note_text} "
+            "Retrieved operational notes include related observations: "
+            f"{note_text} "
             "These observations are contextual associations only. "
-            "They do not change the structured ranking and do not "
+            "They do not change the structured result and do not "
             "prove causation."
         )
 
@@ -410,7 +431,10 @@ Rules:
   clearly describe those as note context only, not as the ranked result.
 - Do not calculate anything.
 - Do not introduce any new facts.
-- Do not write any digits or numeric values in the explanation.
+- Do not write digits.
+- Do not spell out quantities, percentages, counts, rates, fractions,
+  magnitudes, or other numeric values using words.
+- Use vague qualitative wording instead of numeric restatements.
 - Do not claim that an operational note caused a metric.
 - Use wording such as "associated with", "appears in the retrieved notes",
   "related observation", or "may warrant investigation".
@@ -500,6 +524,8 @@ Return only the explanation text.
             "cross_region_rag_cannot_override_sql": True,
             "causal_claim_allowed": False,
             "numeric_text_allowed_in_llm_explanation": False,
+            "numeric_words_allowed_in_llm_explanation": False,
+            "semantic_numeric_leakage_blocked": True,
             "validation_passed": (
                 not validation_problems
             ),
@@ -512,9 +538,7 @@ Return only the explanation text.
 
 
 def main() -> None:
-    parser = (
-        argparse.ArgumentParser()
-    )
+    parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "question"
@@ -537,14 +561,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    result = (
-        explain_hybrid_evidence(
-            args.question,
-            dataset_name=(
-                args.dataset_name
-            ),
-            role=args.role,
-        )
+    result = explain_hybrid_evidence(
+        args.question,
+        dataset_name=args.dataset_name,
+        role=args.role,
     )
 
     print(
