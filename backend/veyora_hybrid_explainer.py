@@ -44,6 +44,15 @@ FORBIDDEN_AUTONOMOUS_PATTERNS = (
     r"\bmust change\b",
 )
 
+# These phrases imply a configured benchmark/threshold that the current
+# evidence package does not provide.
+FORBIDDEN_UNSUPPORTED_BENCHMARK_PATTERNS = (
+    r"\b(?:miss rate|sla miss rate|rate)\s+(?:is\s+)?(?:above|below|over|under)\s+(?:the\s+)?(?:target|threshold|benchmark)\b",
+    r"\b(?:higher|lower)\s+than\s+(?:the\s+)?(?:target|threshold|benchmark)\b",
+    r"\b(?:exceeds?|falls below)\s+(?:the\s+)?(?:target|threshold|benchmark)\b",
+    r"\boutside\s+(?:the\s+)?(?:target|threshold|benchmark)\b",
+)
+
 NUMERIC_WORD_PATTERN = re.compile(
     r"\b("
     r"zero|one|two|three|four|five|six|seven|eight|nine|ten|"
@@ -186,6 +195,14 @@ def _validate_explanation(
         if re.search(pattern, lowered):
             problems.append(
                 "The explanation used autonomous action language."
+            )
+            break
+
+    for pattern in FORBIDDEN_UNSUPPORTED_BENCHMARK_PATTERNS:
+        if re.search(pattern, lowered):
+            problems.append(
+                "The explanation introduced an unsupported benchmark, "
+                "target, or threshold comparison."
             )
             break
 
@@ -433,6 +450,10 @@ Rules:
 - Do not write digits.
 - Do not spell out quantities, percentages, counts, rates, fractions,
   magnitudes, or other numeric values using words.
+- Do not claim that a metric is above, below, over, under, higher than,
+  lower than, or outside a target, threshold, or benchmark unless the
+  validated structured evidence explicitly contains that benchmark.
+- Do not invent targets, thresholds, goals, baselines, or benchmarks.
 - Use vague qualitative wording instead of numeric restatements.
 - Do not claim that an operational note caused a metric.
 - Use wording such as "associated with", "appears in the retrieved notes",
@@ -497,22 +518,16 @@ Return only the explanation text.
         not llm_explanation
         or llm_validation_problems
     ):
-        final_answer = _fallback_explanation(
-            evidence
-        )
+        final_answer = _fallback_explanation(evidence)
         used_fallback = True
 
-    # Important: validate the actual answer that will be returned,
-    # not only the original LLM candidate.
     final_validation_problems = _validate_final_answer(
         final_answer,
         evidence=evidence,
     )
 
     return {
-        "source": (
-            "veyora_grounded_hybrid_explanation"
-        ),
+        "source": "veyora_grounded_hybrid_explanation",
         "dataset_name": dataset_name,
         "role": role,
         "question": question,
@@ -530,11 +545,10 @@ Return only the explanation text.
             "numeric_text_allowed_in_llm_explanation": False,
             "numeric_words_allowed_in_llm_explanation": False,
             "semantic_numeric_leakage_blocked": True,
+            "unsupported_benchmark_claims_blocked": True,
             "fallback_semantic_deduplication": True,
             "fallback_clause_deduplication": True,
             "fallback_used": used_fallback,
-
-            # New explicit status fields.
             "llm_candidate_validation_passed": (
                 bool(llm_explanation)
                 and not llm_validation_problems
@@ -548,9 +562,6 @@ Return only the explanation text.
             "final_answer_validation_problems": (
                 final_validation_problems
             ),
-
-            # Backwards-compatible field now describes the
-            # ACTUAL returned answer.
             "validation_passed": (
                 not final_validation_problems
             ),
@@ -563,22 +574,15 @@ Return only the explanation text.
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-
     parser.add_argument("question")
-
     parser.add_argument(
         "--dataset-name",
         default="veyora_massive",
     )
-
     parser.add_argument(
         "--role",
         default="analyst",
-        choices=[
-            "admin",
-            "analyst",
-            "viewer",
-        ],
+        choices=["admin", "analyst", "viewer"],
     )
 
     args = parser.parse_args()
